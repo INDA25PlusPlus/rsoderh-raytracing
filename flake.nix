@@ -20,13 +20,15 @@
         };
         craneLib = crane.mkLib pkgs;
         src = craneLib.cleanCargoSource ./.;
+        libs = [
+          pkgs.wayland # For wayland support
+          pkgs.vulkan-loader # Graphics backend
+        ];
         commonArgs = {
           inherit src;
           strictDeps = true;
 
-          buildInputs = [
-            # Add additional build inputs here
-          ];
+          buildInputs = libs;
 
           # Additional environment variables can be set directly
           # MY_CUSTOM_VAR = "some value";
@@ -53,6 +55,8 @@
           env = {
             # Required by rust-analyzer
             RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
+            # Required to make `cargo run` work.
+            LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath libs;
           };
         };
 
