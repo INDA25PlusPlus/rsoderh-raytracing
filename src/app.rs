@@ -11,7 +11,7 @@ use winit::{
 
 use crate::{
     camera::{Camera, KeyboardLayout},
-    scene::{Material, Scene, Sphere},
+    scene::{Material, Plane, Scene, Sphere},
     state::State,
 };
 
@@ -75,19 +75,52 @@ impl ApplicationHandler<State> for App {
                     roughness: 1.0,
                     emission_strength: 0.0,
                 },
+                // Ground
+                Material {
+                    color: vec3(1.0, 1.0, 1.0),
+                    roughness: 1.0,
+                    emission_strength: 0.0,
+                },
+                // Marker
+                Material {
+                    color: vec3(1.0, 0.0, 0.0),
+                    roughness: 1.0,
+                    emission_strength: 0.0,
+                },
             ],
             spheres: vec![
                 Sphere {
-                    pos: vec3(0.0, 0.0, -2.0),
+                    pos: vec3(0.0, 1.1, -2.0),
                     radius: 1.0,
                     material_id: 0,
                 },
                 Sphere {
-                    pos: vec3(1.3, 0.0, -1.5),
+                    pos: vec3(1.3, 1.1, -1.5),
                     radius: 1.3,
                     material_id: 1,
                 },
+                Sphere {
+                    pos: vec3(0., 0., 0.),
+                    radius: 0.05,
+                    material_id: 3,
+                },
+                Sphere {
+                    pos: vec3(-5., 0., -5.),
+                    radius: 0.05,
+                    material_id: 3,
+                },
+                Sphere {
+                    pos: vec3(5., 0., 5.),
+                    radius: 0.05,
+                    material_id: 3,
+                },
             ],
+            planes: vec![Plane {
+                pos: vec3(-5., 0., -5.),
+                forward: vec3(0., 0., 10.),
+                right: vec3(10., 0., 0.),
+                material_id: 2,
+            }],
         };
 
         let keyboard_layout = KeyboardLayout::parse_config("dash", "c").unwrap();

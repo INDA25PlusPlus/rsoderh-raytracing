@@ -217,6 +217,19 @@ impl State {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
+        let planes_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Planes"),
+            contents: &encase::StorageBuffer::<()>::content_of::<_, Vec<u8>>(
+                &scene
+                    .planes
+                    .iter()
+                    .map(|plane| plane.to_uniform())
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap(),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+
         let scene_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 entries: &[
@@ -242,6 +255,17 @@ impl State {
                         },
                         count: None,
                     },
+                    // Planes
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
                 ],
                 label: Some("scene_bind_group_layout"),
             });
@@ -256,6 +280,10 @@ impl State {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: spheres_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: planes_buffer.as_entire_binding(),
                 },
             ],
             label: Some("scene_bind_group"),
