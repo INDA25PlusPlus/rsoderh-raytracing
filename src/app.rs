@@ -1,13 +1,19 @@
 use std::sync::Arc;
 
+use cgmath::{Deg, Rad};
+use glam::vec3;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 use winit::{
-    application::ApplicationHandler, event::*, event_loop::ActiveEventLoop, keyboard::PhysicalKey,
-    window::Window,
+    application::ApplicationHandler, event::*, event_loop::ActiveEventLoop,
+    platform::modifier_supplement::KeyEventExtModifierSupplement, window::Window,
 };
 
-use crate::state::State;
+use crate::{
+    camera::{Camera, KeyboardLayout},
+    scene::{Material, Scene, Sphere},
+    state::State,
+};
 
 pub struct App {
     #[cfg(target_arch = "wasm32")]
@@ -48,11 +54,50 @@ impl ApplicationHandler<State> for App {
 
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
 
+        let camera = Camera {
+            // position the camera 1 unit up and 2 units back
+            // +z is out of the screen
+            pos: (0.0, 1.0, 3.0).into(),
+            pitch: Rad(0.0),
+            yaw: Rad(0.0),
+            fov_y: Deg(100.0).into(),
+        };
+        let scene = Scene {
+            camera,
+            materials: vec![
+                Material {
+                    color: vec3(1.0, 0.63, 0.41),
+                    roughness: 1.0,
+                    emission_strength: 0.0,
+                },
+                Material {
+                    color: vec3(0.56, 1.0, 0.52),
+                    roughness: 1.0,
+                    emission_strength: 0.0,
+                },
+            ],
+            spheres: vec![
+                Sphere {
+                    pos: vec3(0.0, 0.0, -2.0),
+                    radius: 1.0,
+                    material_id: 0,
+                },
+                Sphere {
+                    pos: vec3(1.3, 0.0, -1.5),
+                    radius: 1.3,
+                    material_id: 1,
+                },
+            ],
+        };
+
+        let keyboard_layout = KeyboardLayout::parse_config("dash", "c").unwrap();
+
         #[cfg(not(target_arch = "wasm32"))]
         {
             // If we are not on web we can use pollster to
             // await the
-            self.state = Some(pollster::block_on(State::new(window)).unwrap());
+            self.state =
+                Some(pollster::block_on(State::new(window, keyboard_layout, scene)).unwrap());
         }
 
         #[cfg(target_arch = "wasm32")]
@@ -64,7 +109,7 @@ impl ApplicationHandler<State> for App {
                     assert!(
                         proxy
                             .send_event(
-                                State::new(window)
+                                State::new(window, keyboard_layout, scene)
                                     .await
                                     .expect("Unable to create canvas!!!")
                             )
@@ -118,14 +163,32 @@ impl ApplicationHandler<State> for App {
                 }
             }
             WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        physical_key: PhysicalKey::Code(code),
-                        state: key_state,
-                        ..
-                    },
+                event: event @ KeyEvent { repeat: false, .. },
                 ..
-            } => state.handle_key(event_loop, code, key_state.is_pressed()),
+            } => state
+                .handle_key(
+                    event_loop,
+                    &event.key_without_modifiers(),
+                    event.state.is_pressed(),
+                )
+                .unwrap(),
+            _ => {}
+        }
+    }
+
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _device_id: DeviceId,
+        event: DeviceEvent,
+    ) {
+        let state = match &mut self.state {
+            Some(state) => state,
+            None => return,
+        };
+
+        match event {
+            DeviceEvent::MouseMotion { delta } => state.handle_mouse_motion(delta),
             _ => {}
         }
     }
