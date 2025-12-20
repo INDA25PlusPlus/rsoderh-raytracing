@@ -4,7 +4,7 @@ use crate::camera::Camera;
 
 #[derive(Debug, Clone, encase::ShaderType)]
 pub struct Material {
-    pub color: Vec3,
+    pub albedo: Vec3,
     pub roughness: f32,
     pub emission_strength: f32,
 }

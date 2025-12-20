@@ -186,23 +186,17 @@ impl CameraController {
     pub fn update(&mut self, camera: &mut Camera, delta_seconds: f32) {
         // Update position.
 
-        // Velocity from sideways and forward-backwards movement, in world space.
-        let plane_velocity = camera.rot_transform()
+        // Unscaled velocity vector
+        let velocity_direction = Mat3::from_axis_angle(Vec3::Y, camera.yaw.0)
             * vec3(
                 (if self.right_pressed { 1. } else { 0. })
                     + (if self.left_pressed { -1. } else { 0. }),
-                0.,
+                (if self.space_pressed { 1. } else { 0. })
+                    + (if self.shift_pressed { -1. } else { 0. }),
                 (if self.back_pressed { 1. } else { 0. })
                     + (if self.forward_pressed { -1. } else { 0. }),
             );
-        // Velocity from up-down movement, in world space.
-        let y_velocity = vec3(
-            0.,
-            (if self.space_pressed { 1. } else { 0. })
-                + (if self.shift_pressed { -1. } else { 0. }),
-            0.,
-        );
-        let target_velocity = (plane_velocity + y_velocity).normalize_or_zero() * Self::MAX_SPEED;
+        let target_velocity = velocity_direction.normalize_or_zero() * Self::MAX_SPEED;
 
         let acceleration = if target_velocity == Vec3::ZERO {
             Self::FRICTION

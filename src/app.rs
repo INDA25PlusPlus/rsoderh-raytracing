@@ -66,26 +66,26 @@ impl ApplicationHandler<State> for App {
             camera,
             materials: vec![
                 Material {
-                    color: vec3(1.0, 0.63, 0.41),
+                    albedo: vec3(1.0, 0.63, 0.41),
                     roughness: 1.0,
                     emission_strength: 0.0,
                 },
                 Material {
-                    color: vec3(0.56, 1.0, 0.52),
+                    albedo: vec3(0.56, 1.0, 0.52),
                     roughness: 1.0,
                     emission_strength: 0.0,
                 },
                 // Ground
                 Material {
-                    color: vec3(1.0, 1.0, 1.0),
+                    albedo: vec3(0.95, 0.95, 0.95),
                     roughness: 1.0,
                     emission_strength: 0.0,
                 },
                 // Marker
                 Material {
-                    color: vec3(1.0, 0.0, 0.0),
+                    albedo: vec3(1.0, 0.0, 0.0),
                     roughness: 1.0,
-                    emission_strength: 0.0,
+                    emission_strength: 1.0,
                 },
             ],
             spheres: vec![
@@ -105,18 +105,33 @@ impl ApplicationHandler<State> for App {
                     material_id: 3,
                 },
                 Sphere {
-                    pos: vec3(-5., 0., -5.),
+                    pos: vec3(-4., 0., -5.),
                     radius: 0.05,
                     material_id: 3,
                 },
                 Sphere {
-                    pos: vec3(5., 0., 5.),
+                    pos: vec3(6., 0., 5.),
+                    radius: 0.05,
+                    material_id: 3,
+                },
+                Sphere {
+                    pos: vec3(1., -0.05, 1.),
+                    radius: 0.05,
+                    material_id: 3,
+                },
+                Sphere {
+                    pos: vec3(1.2, -0.03, 1.),
+                    radius: 0.05,
+                    material_id: 3,
+                },
+                Sphere {
+                    pos: vec3(1.4, -0.01, 1.),
                     radius: 0.05,
                     material_id: 3,
                 },
             ],
             planes: vec![Plane {
-                pos: vec3(-5., 0., -5.),
+                pos: vec3(-4., 0., -5.),
                 forward: vec3(0., 0., 10.),
                 right: vec3(10., 0., 0.),
                 material_id: 2,
