@@ -17,6 +17,7 @@ use crate::{
     camera::{Camera, CameraController, CameraUniform, KeyboardLayout},
     hdr,
     scene::Scene,
+    shader,
 };
 
 // This will store the state of our game
@@ -289,7 +290,7 @@ impl State {
             label: Some("scene_bind_group"),
         });
 
-        let shader = device.create_shader_module(wgpu::include_wgsl!("shaders/shader.wgsl"));
+        let shader = device.create_shader_module(shader::include_wgsl!("shaders/shader.wgsl"));
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Compute Pipeline Layout"),

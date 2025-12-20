@@ -6,6 +6,7 @@ pub mod app;
 pub(crate) mod camera;
 pub(crate) mod hdr;
 pub(crate) mod scene;
+pub(crate) mod shader;
 pub mod state;
 pub(crate) mod texture;
 

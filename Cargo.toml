@@ -17,3 +17,10 @@ glam = { version = "0.30.9", features = ["encase", "bytemuck"] }
 
 [lib]
 crate-type = ["cdylib", "rlib"]
+
+[features]
+# Enables loading the shader source at runtime from the file system. Useful when
+# debugging to avoid rust recompilation when only the shaders are being changed.
+# Requires your working directory when running the program to be at the
+# workspace root.
+runtime-shader-src = []
