@@ -93,38 +93,15 @@ fn length_squared(v: vec3<f32>) -> f32 {
 }
 
 // Random number generator
-// Based on algorithm from:
-// https://marktension.nl/blog/my_favorite_wgsl_random_func_so_far/
-
-fn hash_u32(x: u32) -> u32 {
-    var result = x;
-    result += (result << 10);
-    result ^= (result >> 6);
-    result += (result << 3);
-    result ^= (result >> 11);
-    result += (result << 15);
-    return result;
-}
-
-// Construct a float with half-open range [0,1) using low 23 bits. All zeroes
-// yields 0.0, all ones yields the next smallest representable value below 1.0.
-fn float_construct_from_u32(m_in: u32) -> f32 {
-    const ieee_mantissa = 0x007FFFFFu; // binary32 mantissa bitmask
-    const ieee_one = 0x3F800000u;      // 1.0 in IEEE binary32
-
-    var m = m_in;
-    m &= ieee_mantissa;              // Keep only mantissa bits (fractional part)
-    m |= ieee_one;                   // Add fractional part to 1.0
-
-    let f = bitcast<f32>(m);        // Range [1:2]
-    return f - 1.0;                 // Range [0:1]
-}
 
 // Returns a random float in the range [0,1), updating the RNG state in the
 // process.
 fn random_uniform(rng_state: ptr<function, u32>) -> f32 {
-    *rng_state += 1;
-    return float_construct_from_u32(hash_u32(*rng_state));
+    *rng_state = *rng_state * 747796405 + 2891336453;
+    var result = ((*rng_state >> ((*rng_state >> 28) + 4)) ^ *rng_state)
+        * 277803737;
+    result = (result >> 22) ^ result;
+    return f32(result) / 4294967295.0;
 }
 
 // Returns a uniformly distributed random point on the unit circle. The point's
