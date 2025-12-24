@@ -4,9 +4,11 @@ use crate::camera::Camera;
 
 #[derive(Debug, Clone, encase::ShaderType)]
 pub struct Material {
-    pub albedo: Vec3,
+    // The albedo for diffuse materials, and metal reflectance for metals.
+    pub color: Vec3,
     pub roughness: f32,
-    pub emission_strength: f32,
+    pub metallic: f32,
+    pub emission: Vec3,
 }
 
 #[derive(Debug, Clone, encase::ShaderType)]
@@ -26,7 +28,7 @@ pub struct Plane {
 
 impl Plane {
     pub fn to_uniform(&self) -> UniformPlane {
-        let normal = self.forward.cross(self.right);
+        let normal = self.forward.cross(self.right).normalize();
 
         UniformPlane {
             pos: self.pos,

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use cgmath::{Deg, Rad};
-use glam::vec3;
+use glam::{Vec3, vec3};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 use winit::{
@@ -66,26 +66,44 @@ impl ApplicationHandler<State> for App {
             camera,
             materials: vec![
                 Material {
-                    albedo: vec3(1.0, 0.63, 0.41),
-                    roughness: 1.0,
-                    emission_strength: 0.0,
+                    color: vec3(1.0, 0.63, 0.41),
+                    roughness: 1.,
+                    metallic: 0.,
+                    emission: Vec3::ZERO,
                 },
                 Material {
-                    albedo: vec3(0.56, 1.0, 0.52),
-                    roughness: 1.0,
-                    emission_strength: 0.0,
+                    color: vec3(0.56, 1.0, 0.52),
+                    roughness: 1.,
+                    metallic: 0.,
+                    emission: Vec3::ZERO,
                 },
                 // Ground
                 Material {
-                    albedo: vec3(0.95, 0.95, 0.95),
-                    roughness: 1.0,
-                    emission_strength: 0.0,
+                    color: vec3(0.95, 0.95, 0.95),
+                    roughness: 1.,
+                    metallic: 0.,
+                    emission: Vec3::ZERO,
                 },
                 // Marker
                 Material {
-                    albedo: vec3(1.0, 0.0, 0.0),
-                    roughness: 1.0,
-                    emission_strength: 1.0,
+                    color: vec3(1.0, 1.0, 1.0),
+                    roughness: 1.,
+                    metallic: 0.,
+                    emission: vec3(1.0, 0.0, 0.0),
+                },
+                // Metallic Mirror
+                Material {
+                    color: vec3(0.8, 0.8, 0.8),
+                    roughness: 0.0,
+                    metallic: 1.,
+                    emission: Vec3::ZERO,
+                },
+                // Dielectric Mirror
+                Material {
+                    color: vec3(0.8, 0.8, 0.8),
+                    roughness: 0.0,
+                    metallic: 0.,
+                    emission: Vec3::ZERO,
                 },
             ],
             spheres: vec![
@@ -99,6 +117,18 @@ impl ApplicationHandler<State> for App {
                     radius: 1.3,
                     material_id: 1,
                 },
+                // Mirrors
+                Sphere {
+                    pos: vec3(1.2, 1.1, 1.0),
+                    radius: 0.6,
+                    material_id: 4,
+                },
+                Sphere {
+                    pos: vec3(2.6, 1.1, 1.0),
+                    radius: 0.6,
+                    material_id: 5,
+                },
+                // Markers
                 Sphere {
                     pos: vec3(0., 0., 0.),
                     radius: 0.05,

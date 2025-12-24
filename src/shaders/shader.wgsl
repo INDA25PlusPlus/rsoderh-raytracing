@@ -27,10 +27,60 @@ const NO_HIT = HitInfo(
     0u,
 );
 
+struct BsdfSample {
+    /// The reflected camera view direction. If this is the zero vector, some
+    /// error occurred while this sample was calculated.
+    ray_direction: vec3<f32>,
+    light: vec3<f32>,
+    /// I assume that this is the probability density that the `wi_world`
+    /// would've been chosen.
+    pdf: f32,
+}
+
+/// Represents a local coordinate space with the normal of a surface point
+/// being the forward direction (z+).
+struct Frame {
+    tangent: vec3<f32>,
+    bitangent: vec3<f32>,
+    normal: vec3<f32>,
+}
+
+fn make_frame(normal: vec3<f32>) -> Frame {    
+    // Pick a helper axis that is not parallel to normal.
+    let helper = select(
+        vec3<f32>(1,0,0),
+        vec3<f32>(0,0,1),
+        abs(normal.z) < 0.999
+    );
+    
+    let tangent = normalize(cross(helper, normal));
+    let bitangent = cross(normal, tangent);
+    
+    return Frame(tangent, bitangent, normal);
+}
+
+fn to_frame_local(frame: Frame, vec_world: vec3<f32>) -> vec3<f32> {
+    // Return the components in the basis.
+    return vec3<f32>(
+        dot(vec_world, frame.tangent),
+        dot(vec_world, frame.bitangent),
+        dot(vec_world, frame.normal),
+    );
+}
+
+fn to_frame_world(frame: Frame, vec_local: vec3<f32>) -> vec3<f32> {
+    return normalize(
+        frame.tangent * vec_local.x
+        + frame.bitangent * vec_local.y
+        + frame.normal * vec_local.z
+    );
+}
+
 struct Material {
-    albedo: vec3<f32>,
+    color: vec3<f32>,
     roughness: f32,
-    emission_strength: f32,
+    metallic: f32,
+    emission: vec3<f32>,
 }
 
 struct Sphere {
@@ -87,9 +137,14 @@ fn lerp_vec3f(a: vec3<f32>, b: vec3<f32>, t: f32) -> vec3<f32> {
     return (1.0 - t) * a + t * b;
 }
 
-/// Returns value equivalent to `length(v) * 2.0`.
+/// Returns value equivalent to `length(v) * length(v)`.
 fn length_squared(v: vec3<f32>) -> f32 {
     return dot(v, v);
+}
+
+/// Returns the largest component of `v`.
+fn max_component(v: vec3<f32>) -> f32 {
+    return max(v.x, max(v.y, v.z));
 }
 
 // Random number generator
@@ -294,34 +349,367 @@ fn cast_ray(ray: Ray) -> HitInfo {
     return result;
 }
 
+/// The parameters representing a surface material required for a BSDF shader.
+struct BsdfMaterial {
+    // The albedo for diffuse materials, and metal reflectance for metals.
+    color: vec3<f32>,
+    metallic: f32,
+    /// Surface variance parameter. This somehow represents the surface
+    /// microfacet normal distribution. The distribution describes the
+    /// percentage of microfacets with a certain normal for a given surface
+    /// point.
+    alpha: f32,
+    /// The fresnel reflectance at normal incidence, i.e. the fraction of light
+    /// that is reflected when a ray of light hits the surface head-on.
+    f0: vec3<f32>,
+}
+
+fn make_bsdf_material(material: Material) -> BsdfMaterial {
+    // TODO: Support perfectly smooth materials using separate shader.
+    let alpha = max(0.001, material.roughness * material.roughness);
+    return BsdfMaterial(
+        material.color,
+        material.metallic,
+        alpha,
+        surface_f0(material),
+    );
+}
+
+/// The fresnel reflectance at normal incidence of a dielectric surface (a
+/// non-metal). Read non-conductive.
+const DIELECTRIC_F0 = vec3<f32>(0.04, 0.04, 0.04);
+
+/// Computes fresnel reflectance at normal incidence for the given material,
+/// i.e. the fraction of light that is reflected when a ray of light hits the
+/// surface head-on.
+fn surface_f0(material: Material) -> vec3<f32> {
+    // F0 is equal to the base color for metallic matterials and `DIELECTRIC_F0` for
+    // diffuse materials.
+    return lerp_vec3f(DIELECTRIC_F0, material.color, saturate(material.metallic));
+}
+
+/// Computes the diffuse reflectance coefficient for the given material, i.e.
+/// the fraction of incoming light that enters the surface, scatters internally,
+/// and then exits back out diffusely.
+fn surface_kd(material: BsdfMaterial) -> vec3<f32> {
+    let kd0 = material.color * (1 - saturate(material.metallic));
+    return kd0 * (1 - max_component(material.f0));
+}
+
+/// Computes the "luminance" of a color.
+fn luminance(color: vec3<f32>) -> f32 {
+    return 0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b;
+}
+
+/// Returns the point of the hemisphere pointed towards +z, corresponding to the
+/// given pair of coordinates. These should be in the range [0,1). If the
+/// coordinates have been selected by a uniform distribution the point in the
+/// hemisphere has a "cosine-weighted distribution".
+fn sample_cosine_hemisphere(sample: vec2<f32>) -> vec3<f32> {
+    let r = sqrt(sample.x);
+    let phi = 2 * PI * sample.y;
+
+    let x = r * cos(phi);
+    let y = r * sin(phi);
+    let z = sqrt(max(0., 1. - x * x - y * y));
+
+    return vec3(x, y, z);
+}
+
+/// Returns the PDF value of a direction in frame local space or something.
+fn pdf_cosine_hemisphere(wi: vec3<f32>) -> f32 {
+    if wi.z <= 0 {
+        return 0.;
+    }
+    return wi.z / PI;
+}
+
+/// Calculates the microfacet orientation density of the given microfacet normal
+/// h for a material with the given surface variance `alpha`. If n is the
+/// surface normal, then the argument `normal_dot_h` should be equal to dot(n,h).
+fn d_ggx(normal_dot_h: f32, alpha: f32) -> f32 {
+    let alpha_2 = alpha * alpha;
+    let denominator = (normal_dot_h * normal_dot_h) * (alpha_2 - 1.) + 1.;
+    return alpha_2 / (PI * denominator * denominator);
+}
+
+/// Idk, like returns the pdf of a half-vector or something...
+fn pdf_ggx_halfvector(h: vec3<f32>, alpha: f32) -> f32 {    
+    if h.z <= 0. {
+      return 0.;
+    }
+    return d_ggx(h.z, alpha) * h.z;
+}
+
+/// Computes the GGX half-vector direction vector for the given pair of
+/// coordinates. These should be in the range [0,1).
+/// `alpha` is the surface variance parameter, i.e. the "roughness" of the
+/// surface.
+fn sample_ggx_half_vector(sample: vec2<f32>, alpha: f32) -> vec3<f32> {
+    let longitude = 2. * PI * sample.x;
+    
+    // Invert GGX NDF CDF (common form) (I like your funny words, magic man)
+    let cos2_latitude = (1. - sample.y) / (1. + (alpha - 1.) * sample.y);
+    let cos_latitude = sqrt(max(0., cos2_latitude));
+    let sin_latitude = sqrt(max(0., 1. - cos_latitude * cos_latitude));
+    
+    let x = sin_latitude * cos(longitude);
+    let y = sin_latitude * sin(longitude);
+    let z = cos_latitude;
+    
+    return vec3(x, y, z);
+}
+
+/// Computes the average self-occlusion along a direction v for a material with
+/// the given surface variance `alpha`. If n is the surface normal, then the
+/// argument `normal_dot_v` should be equal to dot(n,v).
+fn lambda_ggx(normal_dot_v: f32, alpha: f32) -> f32 {
+    let normal_dot_v_2 = normal_dot_v * normal_dot_v;
+    
+    return (sqrt(1 + alpha * alpha * (1 - normal_dot_v_2) / normal_dot_v_2)
+        - 1)
+        / 2;
+}
+
+/// I don't understand this, but according to ChatGPT, this calculates the
+/// "single-direction visibility probability" from direction v, for a material
+/// with the given surface variance `alpha`. If n is the surface normal, then
+/// the argument `normal_dot_v` should be equal to dot(n,v).
+fn g1_ggx(normal_dot_v: f32, alpha: f32) -> f32 {
+    return 1. / (1 + lambda_ggx(normal_dot_v, alpha));
+}
+
+/// Calculates the probability that a microfacet is visible from both the viewer
+/// direction o and light direction i, given a material with the surface
+/// variance `alpha`.
+///
+/// If n is the surface normal, then the argument `normal_dot_o` and
+/// `normal_dot_i` should be equal to dot(n,o) and dot(n,i) respectively.
+fn g_smith_ggx(normal_dot_o: f32, normal_dot_i: f32, alpha: f32) -> f32 {
+    return g1_ggx(normal_dot_o, alpha) * g1_ggx(normal_dot_i, alpha);
+}
+
+/// I also don't understand this. According to ChatGPT, this should calculate
+/// the "angle-dependent surface reflectivity".
+///
+/// It answers the question "Given that light hits a microfacet at this angle,
+/// how much of it is reflected instead of entering the material?"
+fn f_schlick(f0: vec3<f32>, cos_theta: f32) -> vec3<f32> {
+    let x = (1 - saturate(cos_theta));
+    let x_2 = x * x;
+    let x_5 = x_2 * x_2 * x;
+    
+    return f0 + (vec3(1.) - f0) * x_5;
+}
+
+fn bsdf_eval_local(
+    wo: vec3<f32>,
+    wi: vec3<f32>,
+    material: BsdfMaterial
+) -> vec3<f32> {
+    if wo.z <= 0 || wi.z <= 0 {
+        return vec3(0.,0.,0.);
+    }
+    
+    /// The dot product of the surface normal and the respective light direction
+    /// vectors. 
+    let normal_dot_wo = wo.z;
+    let normal_dot_wi = wi.z;
+    
+    // The half-vector (whatever that is...)
+    let h = normalize(wo + wi);
+    let normal_dot_h = saturate(h.z);
+    
+    // Specular microfacet
+    let orientation_density = d_ggx(normal_dot_h, material.alpha);
+    let visibility_probability = g_smith_ggx(normal_dot_wo, normal_dot_wi, material.alpha);
+    let surface_reflectivity = f_schlick(material.f0, dot(h, wo));
+    
+    // No clue what this is. Apparently described by "spectrum".
+    let fs = (orientation_density * visibility_probability)
+        / (4 * normal_dot_wo * normal_dot_wi)
+        * surface_reflectivity;
+    
+    
+    // Somehow described by "diffuse lambert":
+    let kd = surface_kd(material);
+    let fd = kd * (1 / PI);
+    
+    return fd + fs;
+}
+
+fn pdf_specular_wi(wo: vec3<f32>, wi: vec3<f32>, alpha: f32) -> f32 {
+    if wo.z <= 0. || wi.z <= 0. {
+        return 0.;
+    }
+    
+    let h = normalize(wo + wi);
+    
+    let wo_dot_h = abs(dot(wo, h));
+    if wo_dot_h <= 0. {
+        return 0.;
+    }
+    
+    return pdf_ggx_halfvector(h, alpha) / (4 * wo_dot_h);
+}
+
+fn bsdf_pdf_local(wo: vec3<f32>, wi: vec3<f32>, material: BsdfMaterial) -> f32 {
+    if wo.z <= 0. || wi.z <= 0. {
+        return 0.;
+    }
+    
+    let specular_probability = saturate(luminance(material.f0));
+    let diffuse_probability = 1. - specular_probability;
+    
+    return diffuse_probability * pdf_cosine_hemisphere(wi)
+        + specular_probability * pdf_specular_wi(wo, wi, material.alpha);
+}
+
+fn bsdf_sample(
+    ray: Ray,
+    surface_normal: vec3<f32>,
+    material_in: Material,
+    rng_state: ptr<function, u32>,
+) -> BsdfSample {
+    let material = make_bsdf_material(material_in);
+    
+    // Points from the surface point to the camera (i.e. previous surface).
+    let wo_world = -ray.direction;
+    
+    if dot(surface_normal, wo_world) <= 0 {
+        return BsdfSample(
+            vec3(0., 0., 0.),
+            vec3(0., 0., 1.),
+            0.
+        );
+    }
+    
+    let frame = make_frame(surface_normal);
+    
+    let wo = to_frame_local(frame, wo_world);
+    
+    if wo.z <= 0 {
+        // wo points below the surface (can happen with shading normals), bail.
+        return BsdfSample(
+            vec3(0., 0., 0.),
+            vec3(0., 1., 0.),
+            0.
+        );
+    }
+    
+    // I think these names are correct.
+    let specular_probability = saturate(luminance(material.f0));
+    let diffuse_probability = 1. - specular_probability;
+    
+    // Choose lobe to sample.
+    var wi: vec3<f32>;
+    let sample = random_uniform(rng_state);
+    if sample < diffuse_probability {
+        // Sample diffuse.
+        // For some reason we reuse the previous sample.
+        wi = sample_cosine_hemisphere(vec2(
+            sample / max(diffuse_probability, 1.e-6),
+            random_uniform(rng_state),
+        ));
+    } else {
+        // Sample specular.
+        let h = sample_ggx_half_vector(
+            vec2(
+                (sample - diffuse_probability)
+                    / max(specular_probability, 1.e-6),
+                random_uniform(rng_state),
+            ),
+            material.alpha,
+        );
+        
+        // Reflect wo about h to get wi (still in the frame's local space).
+        // This convention assumes wo and wi are both above surface.
+        // Note: it's critical that both `wo` and `h` are normalized.
+        wi = reflect(-wo, h);
+        if wi.z <= 0. {
+            // The sampled microfacet (with the normal h) would reflect -wo into
+            // the surface. The intuitive reading is that the microfacet's
+            // normal was step enough (relative to the surface normal) that it's
+            // backside blocked -wo.
+            // 
+            // Here you can see that -wo (remember, wo points from the hit point
+            // to the observer) is too shallow to hit the microfacet, i.e. it
+            // can't have been reflected by it.
+            /*          
+            |           /\ surface normal
+            |           |       __
+            |           |    _,-´| wo
+            |  h __     |_,-´
+            |   |`-_   /---------
+            |       `-/ <-- microfacet surface
+            | _______/
+            */
+            return BsdfSample(
+                vec3(0., 0., 1.),
+                vec3(0., 0., 0.),
+                0.
+            );
+        }
+    }
+    
+    let light = bsdf_eval_local(wo, wi, material);
+    let pdf = bsdf_pdf_local(wo, wi, material);
+    let wi_world = to_frame_world(frame, wi);
+    
+    if dot(surface_normal, wi_world) < 0 {
+        return BsdfSample(
+            vec3(0., 0., 0.),
+            vec3(0., 1., 0.),
+            0.
+        );
+    }
+    
+    return BsdfSample(wi_world, light, pdf);
+}
+
 // Trace ray through scene, returning the collected light.
-fn trace_ray(in_ray: Ray, rng_state: ptr<function, u32>) -> vec3<f32> {
-    var ray = in_ray;
+fn trace_ray(ray_arg: Ray, rng_state: ptr<function, u32>) -> vec3<f32> {
+    var ray = ray_arg;
     
     var incoming_light = vec3<f32>(0.);
-    var ray_color = vec3<f32>(1.);
+    var throughput = vec3<f32>(1.);
     
     for (var bounce_count = 0u; bounce_count < MAX_BOUNCES; bounce_count++) {
-        let info = cast_ray(ray);
+        var info = cast_ray(ray);
         if info.did_hit {
             let material = materials[info.material_id];
             
-            ray_color *= material.albedo;
-            incoming_light += material.albedo * material.emission_strength;
+            let sample = bsdf_sample(ray, info.normal, material, rng_state);
+            if all(sample.ray_direction == vec3<f32>(0.)) {
+                // Error occurred during sample calculation, show light as debug
+                // information.
+                incoming_light = sample.light;
+                break;
+            }
+            if sample.pdf <= 0. {
+                // Ray probability density is zero, terminate ray path.
+                break;
+            }
             
-            if (length(ray_color) < 0.001) {
+            // We update throughput using
+            // throughput *= light * cos(theta) / pdf
+            //   where cos(theta) = normal·wi in WORLD space,
+            //                      using shading normal.
+            let cos_theta = max(0., dot(info.normal, sample.ray_direction));
+            throughput *= sample.light * (cos_theta / sample.pdf);
+            incoming_light += material.emission * throughput;
+            
+            if (length(throughput) < 0.001) {
                 // Ray contribution is negligible, terminate.
                 break;
             }
             
-            // TODO: Support fractional roughness.
-            // Perfectly diffuse shader.
             ray = Ray(
                 info.hit_point,
-                random_in_hemisphere_uniform(info.normal, rng_state)
+                sample.ray_direction,
             );
         } else {
-            incoming_light += sky_color(ray.direction) * ray_color;
+            incoming_light += sky_color(ray.direction) * throughput;
             break;
         }
     }
@@ -347,10 +735,10 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
                 - vec2<f32>(1.0))
                 * vec2<f32>(1.0, -1.0);
         
-        // Let the h be the vertical component of ray_camera_space. For the top
-        // row of pixels we want the triangle with a base of 1 and height of h
-        // to have the angle opposite to h be equal to fov_y/2.
-        // The definition of sin gives us this equation: sin(fov_y/2) = h / 1
+        // Let the b be the vertical component of ray_camera_space. For the top
+        // row of pixels we want the triangle with a base of 1 and height of b
+        // to have the angle opposite to b be equal to fov_y/2.
+        // The definition of sin gives us this equation: sin(fov_y/2) = b / 1
         let max_y_component = sin(camera.fov_y / 2);
         
         let aspect_ratio = f32(resolution.x) / f32(resolution.y);
