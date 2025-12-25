@@ -137,6 +137,10 @@ fn lerp_vec3f(a: vec3<f32>, b: vec3<f32>, t: f32) -> vec3<f32> {
     return (1.0 - t) * a + t * b;
 }
 
+fn lerp_f32(a: f32, b: f32, t: f32) -> f32 {
+    return (1.0 - t) * a + t * b;
+}
+
 /// Returns value equivalent to `length(v) * length(v)`.
 fn length_squared(v: vec3<f32>) -> f32 {
     return dot(v, v);
@@ -416,6 +420,16 @@ fn sample_cosine_hemisphere(sample: vec2<f32>) -> vec3<f32> {
     return vec3(x, y, z);
 }
 
+/// Returns the point on the unit disk corresponding to the given pair of
+/// coordinates. These should be in the range [0,1). If the coordinates have
+/// been selected by a uniform distribution the points in the disk will also
+/// have a uniform distribution.
+fn sample_uniform_disk(sample: vec2<f32>) -> vec2<f32> {
+    let radius = sqrt(sample.x);
+    let azimuth = 2 * PI * sample.y;
+    return vec2<f32>(radius * cos(azimuth), radius * sin(azimuth));
+}
+
 /// Returns the PDF value of a direction in frame local space or something.
 fn pdf_cosine_hemisphere(wi: vec3<f32>) -> f32 {
     if wi.z <= 0 {
@@ -433,31 +447,85 @@ fn d_ggx(normal_dot_h: f32, alpha: f32) -> f32 {
     return alpha_2 / (PI * denominator * denominator);
 }
 
-/// Idk, like returns the pdf of a half-vector or something...
-fn pdf_ggx_halfvector(h: vec3<f32>, alpha: f32) -> f32 {    
-    if h.z <= 0. {
+/// Returns the value of `sample_ggx_visible_half_vector`'s PDF.
+fn pdf_ggx_half_vector_visible(h: vec3<f32>, wo: vec3<f32>, alpha: f32) -> f32 {    
+    // Remember, normal = vec3(0, 0, 1) in the view space (which `h` and `wo`
+    // are in).
+    let normal_dot_h = h.z;
+    let normal_dot_wo = wo.z;
+    
+    if normal_dot_h <= 0. {
       return 0.;
     }
-    return d_ggx(h.z, alpha) * h.z;
+    
+    return d_ggx(normal_dot_h, alpha)
+        * g1_ggx(normal_dot_wo, alpha)
+        * max(0., dot(wo, h))
+        / normal_dot_wo;
 }
 
 /// Computes the GGX half-vector direction vector for the given pair of
 /// coordinates. These should be in the range [0,1).
 /// `alpha` is the surface variance parameter, i.e. the "roughness" of the
 /// surface.
-fn sample_ggx_half_vector(sample: vec2<f32>, alpha: f32) -> vec3<f32> {
-    let longitude = 2. * PI * sample.x;
+/// This makes sure to only return half-vectors that are visible from the given
+/// out ray direction `wo`. I.e. it implements VNDF sampling.
+/// Here is an example of a half-vector h that wouldn't be returned, since the
+/// surface would cover it from wo.
+///             /\ surface normal
+///             |       __
+///             |    _,-´| wo
+///    h __     |_,-´
+///     |`-_   /---------
+///         `-/ <-- microfacet surface
+///   _______/
+fn sample_ggx_visible_half_vector(
+    sample: vec2<f32>,
+    wo: vec3<f32>,
+    alpha: f32,
+) -> vec3<f32> {
+    // Stretch the outgoing direction. For isotropic GGX we stretch it by alpha.
+    // TODO: Support anisotropy by stretching x and y differently.
+    let view_stretched =
+        normalize(wo * vec3(alpha, alpha, 1.));
+
+    // The papers code
+    // Build frame around the stretched view direction.
+    let length_squared = dot(view_stretched.xy, view_stretched.xy);
+    let tangent_x = select(
+        vec3(1., 0., 0.),
+        vec3(-view_stretched.y, view_stretched.x, 0.) * inverseSqrt(length_squared),
+        length_squared > 0.,
+    );
+    let tangent_y = cross(view_stretched, tangent_x);
     
-    // Invert GGX NDF CDF (common form) (I like your funny words, magic man)
-    let cos2_latitude = (1. - sample.y) / (1. + (alpha - 1.) * sample.y);
-    let cos_latitude = sqrt(max(0., cos2_latitude));
-    let sin_latitude = sqrt(max(0., 1. - cos_latitude * cos_latitude));
+    var disk_point = sample_uniform_disk(sample);
+    // Warp the disk sample so it matches the "visible normals" distribution.
+    // Interpolate between "a circle and a line segment" depending on the
+    // grazing angle.
+    // This corresponds to constructing (t_1, t_2') in figure 6 from this
+    // paper: http://jcgt.org/published/0007/04/01/.
+    disk_point.y = lerp_f32(
+        sqrt(max(0., 1. - disk_point.x * disk_point.x)),
+        disk_point.y,
+        view_stretched.z,
+    );
     
-    let x = sin_latitude * cos(longitude);
-    let y = sin_latitude * sin(longitude);
-    let z = cos_latitude;
+    // Construct the sampled normal in the view frame's local space, i.e. the
+    // space which `wo` is in (world space from the stretch frame's
+    // perspective).
+    let half_vector_stretched = disk_point.x * tangent_x
+        + disk_point.y * tangent_y
+        + sqrt(max(0., 1. - disk_point.x * disk_point.x - disk_point.y * disk_point.y)) * view_stretched;
     
-    return vec3(x, y, z);
+    // Unstretch back into original local shading space.
+    let half_vector = normalize(vec3<f32>(
+        alpha * half_vector_stretched.x,
+        alpha * half_vector_stretched.y,
+        max(0., half_vector_stretched.z)
+    ));
+    
+    return half_vector;
 }
 
 /// Computes the average self-occlusion along a direction v for a material with
@@ -512,7 +580,7 @@ fn bsdf_eval_local(
     }
     
     /// The dot product of the surface normal and the respective light direction
-    /// vectors. 
+    /// vectors.
     let normal_dot_wo = wo.z;
     let normal_dot_wi = wi.z;
     
@@ -538,7 +606,7 @@ fn bsdf_eval_local(
     return fd + fs;
 }
 
-fn pdf_specular_wi(wo: vec3<f32>, wi: vec3<f32>, alpha: f32) -> f32 {
+fn pdf_specular_wi_visible(wo: vec3<f32>, wi: vec3<f32>, alpha: f32) -> f32 {
     if wo.z <= 0. || wi.z <= 0. {
         return 0.;
     }
@@ -550,7 +618,7 @@ fn pdf_specular_wi(wo: vec3<f32>, wi: vec3<f32>, alpha: f32) -> f32 {
         return 0.;
     }
     
-    return pdf_ggx_halfvector(h, alpha) / (4 * wo_dot_h);
+    return pdf_ggx_half_vector_visible(h, wo, alpha) / (4 * wo_dot_h);
 }
 
 fn bsdf_pdf_local(wo: vec3<f32>, wi: vec3<f32>, material: BsdfMaterial) -> f32 {
@@ -562,7 +630,7 @@ fn bsdf_pdf_local(wo: vec3<f32>, wi: vec3<f32>, material: BsdfMaterial) -> f32 {
     let diffuse_probability = 1. - specular_probability;
     
     return diffuse_probability * pdf_cosine_hemisphere(wi)
-        + specular_probability * pdf_specular_wi(wo, wi, material.alpha);
+        + specular_probability * pdf_specular_wi_visible(wo, wi, material.alpha);
 }
 
 fn bsdf_sample(
@@ -613,12 +681,13 @@ fn bsdf_sample(
         ));
     } else {
         // Sample specular.
-        let h = sample_ggx_half_vector(
+        let h = sample_ggx_visible_half_vector(
             vec2(
                 (sample - diffuse_probability)
                     / max(specular_probability, 1.e-6),
                 random_uniform(rng_state),
             ),
+            wo,
             material.alpha,
         );
         
@@ -627,26 +696,13 @@ fn bsdf_sample(
         // Note: it's critical that both `wo` and `h` are normalized.
         wi = reflect(-wo, h);
         if wi.z <= 0. {
-            // The sampled microfacet (with the normal h) would reflect -wo into
-            // the surface. The intuitive reading is that the microfacet's
-            // normal was step enough (relative to the surface normal) that it's
-            // backside blocked -wo.
-            // 
-            // Here you can see that -wo (remember, wo points from the hit point
-            // to the observer) is too shallow to hit the microfacet, i.e. it
-            // can't have been reflected by it.
-            /*          
-            |           /\ surface normal
-            |           |       __
-            |           |    _,-´| wo
-            |  h __     |_,-´
-            |   |`-_   /---------
-            |       `-/ <-- microfacet surface
-            | _______/
-            */
+            // `-wo` is blocked from "seeing" `h`'s surface, which the sampling
+            // function should prevent (see the diagram in
+            // sample_ggx_visible_half_vector).
+            // This can still occur due to imprecision though.
             return BsdfSample(
-                vec3(0., 0., 1.),
-                vec3(0., 0., 0.),
+                vec3(1., 0., 0.),
+                vec3(1., 0., 0.),
                 0.
             );
         }
