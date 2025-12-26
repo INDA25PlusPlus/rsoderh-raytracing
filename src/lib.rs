@@ -3,6 +3,7 @@ use winit::event_loop::EventLoop;
 use crate::app::App;
 
 pub mod app;
+pub(crate) mod bvh;
 pub(crate) mod camera;
 pub(crate) mod hdr;
 pub(crate) mod scene;

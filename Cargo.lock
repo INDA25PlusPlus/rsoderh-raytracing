@@ -1527,6 +1527,7 @@ dependencies = [
  "env_logger",
  "glam",
  "log",
+ "ordered-float",
  "pollster",
  "wgpu",
  "winit",

@@ -14,6 +14,7 @@ use winit::{
 use wasm_bindgen::prelude::*;
 
 use crate::{
+    bvh::build_bvh,
     camera::{Camera, CameraController, CameraUniform, KeyboardLayout},
     hdr,
     scene::Scene,
@@ -231,6 +232,20 @@ impl State {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
+        let (primitives, bvh_nodes) = build_bvh(&scene);
+
+        let primitives_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Spheres"),
+            contents: &encase::StorageBuffer::<()>::content_of::<_, Vec<u8>>(&primitives).unwrap(),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let bvh_nodes_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Spheres"),
+            contents: &encase::StorageBuffer::<()>::content_of::<_, Vec<u8>>(&bvh_nodes).unwrap(),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+
         let scene_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 entries: &[
@@ -267,6 +282,28 @@ impl State {
                         },
                         count: None,
                     },
+                    // Primitives
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // BVH nodes
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
                 ],
                 label: Some("scene_bind_group_layout"),
             });
@@ -285,6 +322,14 @@ impl State {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: planes_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: primitives_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: bvh_nodes_buffer.as_entire_binding(),
                 },
             ],
             label: Some("scene_bind_group"),

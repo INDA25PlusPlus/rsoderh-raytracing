@@ -11,6 +11,11 @@ struct Ray {
     direction: vec3<f32>,
 }
 
+struct Bounds3 {
+    min: vec3<f32>,
+    max: vec3<f32>,
+}
+
 struct HitInfo {
     did_hit: bool,
     distance: f32,
@@ -102,6 +107,26 @@ struct Plane {
     material_id: u32,
 }
 
+struct PrimitiveInfo {
+    /// Which object array this primitive is in. 0 for spheres and 1 for planes.
+    primitive_type: u32,
+    /// The index of this primitive in its associated array.
+    index: u32,
+}
+
+struct BvhNode {
+    bounds: Bounds3,
+    /// If leaf node, stores the index its primitives start at in the primitives
+    /// array.
+    /// If interior node, stores the index of the second child node. The first
+    /// child node's index is equal to this node's index + 1.
+    primitives_or_second_child_index: u32,
+    /// The amount of primitives contained in this node if it's a leaf node,
+    /// otherwise 0.
+    primitives_len: u32,
+    split_axis: u32,
+}
+
 @group(0) @binding(0)
 var out_texture: texture_storage_2d<rgba16float, write>;
 
@@ -123,7 +148,13 @@ var<storage, read> spheres: array<Sphere>;
 @group(2) @binding(2)
 var<storage, read> planes: array<Plane>;
 
-const NUM_SAMPLES: u32 = 50;
+@group(2) @binding(3)
+var<storage, read> primitives: array<PrimitiveInfo>;
+
+@group(2) @binding(4)
+var<storage, read> bvh_nodes: array<BvhNode>;
+
+const NUM_SAMPLES: u32 = 10;
 const MAX_BOUNCES: u32 = 10;
 
 // Largest representable f32 (actual IEEE infinity can't be used).
@@ -149,6 +180,41 @@ fn length_squared(v: vec3<f32>) -> f32 {
 /// Returns the largest component of `v`.
 fn max_component(v: vec3<f32>) -> f32 {
     return max(v.x, max(v.y, v.z));
+}
+
+/// Checks if `ray` intersects the given `bounds`.
+/// `inv_direction` should be equal to `1. / ray.direction`.
+fn ray_intersects_bounds(
+    ray: Ray,
+    bounds: Bounds3,
+    inv_direction: vec3<f32>
+) -> bool {
+    var t_0 = 0.;
+    var t_1 = INFINITY;
+    for (var axis = 0u; axis < 3; axis++) {
+        // Intersect with the two faces along `axis`.
+        
+        var t_near = (bounds.min[axis] - ray.origin[axis]) * inv_direction[axis];
+        var t_far = (bounds.max[axis] - ray.origin[axis]) * inv_direction[axis];
+        
+        if t_near > t_far {
+            let t_near_old = t_near;
+            t_near = t_far;
+            t_far = t_near_old;
+        }
+        
+        if t_near > t_0 {
+            t_0 = t_near;
+        }
+        if t_far < t_1 {
+            t_1 = t_far;
+        }
+        if t_0 > t_1 {
+            return false;
+        }
+    }
+    
+    return true;
 }
 
 fn cast_ray_sphere(ray: Ray, sphere: Sphere) -> HitInfo {
@@ -264,6 +330,95 @@ fn cast_ray_plane(ray: Ray, plane: Plane) -> HitInfo {
     );
 }
 
+fn cast_ray_bvh(ray: Ray) -> HitInfo {
+    let ray_inv_direction = 1. / ray.direction;
+    
+    var result = HitInfo(
+        false,
+        INFINITY,
+        vec3<f32>(0.0),
+        vec3<f32>(0.0),
+        0u,
+    );
+    
+    var hit = false;
+    // Stack of indices of nodes to test intersection with.
+    var nodes_to_visit: array<u32, 64>;
+    var stack_length = 0u;
+    
+    var current_node_index = 0u;
+    
+    loop {
+        let node = bvh_nodes[current_node_index];
+        if ray_intersects_bounds(ray, node.bounds, ray_inv_direction) {
+            if node.primitives_len > 0 {
+                // `node` is a leaf node.
+                
+                for (var i = 0u; i < node.primitives_len; i++) {
+                    let info = primitives[node.primitives_or_second_child_index + i];
+                    switch info.primitive_type {
+                        case 0 {
+                            let sphere = spheres[info.index];
+                            
+                            let info = cast_ray_sphere(ray, sphere);
+                            if info.did_hit && info.distance < result.distance {
+                                result = info;
+                            }
+                        }
+                        case 1 {
+                            let plane = planes[info.index];
+                            
+                            let info = cast_ray_plane(ray, plane);
+                            if info.did_hit && info.distance < result.distance {
+                                result = info;
+                            }
+                        }
+                        default {
+                            // Unreachable (surely)
+                        }
+                    }
+                }
+                
+                if stack_length == 0 {
+                    // We have walked through all relevant nodes.
+                    break;
+                }
+                stack_length--;
+                current_node_index = nodes_to_visit[stack_length];
+            } else {
+                // `node` is an interior node.
+                
+                // No idea why this works/is necessary. :)
+                if ray_inv_direction[node.split_axis] < 0. {
+                    // Visit second child first.
+                    nodes_to_visit[stack_length] = current_node_index + 1;
+                    stack_length++;
+                    current_node_index = node.primitives_or_second_child_index;
+                } else {
+                    // Visit first child to stack.
+                    nodes_to_visit[stack_length] =
+                        node.primitives_or_second_child_index;
+                    stack_length++;
+                    current_node_index = current_node_index + 1;
+                }
+            }
+        } else {
+            if stack_length == 0 {
+                // We have walked through all relevant nodes.
+                break;
+            }
+            stack_length--;
+            current_node_index = nodes_to_visit[stack_length];
+        }
+    }
+    
+    if !result.did_hit {
+        return NO_HIT;
+    }
+    
+    return result;
+}
+
 // Cast ray through scene, returning the surface if one was hit.
 fn cast_ray(ray: Ray) -> HitInfo {
     var result = HitInfo(
@@ -273,6 +428,13 @@ fn cast_ray(ray: Ray) -> HitInfo {
         vec3<f32>(0.0),
         0u,
     );
+    
+    {
+        let result = cast_ray_bvh(ray);
+        if result.did_hit {
+            return result;
+        }
+    }
     
     for (var i: u32 = 0; i < arrayLength(&spheres); i++) {
         let sphere = spheres[i];
