@@ -279,7 +279,7 @@ fn emit_lbvh(
 ) -> BvhBuildNode {
     const MAX_PRIMITIVES_PER_NODE: usize = 5;
 
-    if bit_index == -1 || morton_primitives.len() < MAX_PRIMITIVES_PER_NODE {
+    if bit_index == -1 || morton_primitives.len() <= MAX_PRIMITIVES_PER_NODE {
         *total_nodes += 1;
         let bounds = Bounds3::from_bounds(
             morton_primitives
@@ -317,7 +317,7 @@ fn emit_lbvh(
         while search_start + 1 != search_end {
             let mid = (search_start + search_end) / 2;
             if (morton_primitives[search_start].morton_code & mask)
-                == (morton_primitives[search_end].morton_code & mask)
+                == (morton_primitives[mid].morton_code & mask)
             {
                 search_start = mid;
             } else {
@@ -343,7 +343,7 @@ fn emit_lbvh(
             ),
         ];
         // bit_index should not be negative at this point (I think...)
-        let axis = Axis::from(bit_index as u8);
+        let axis = Axis::from(bit_index as u8 % 3);
         BvhBuildNode::new_interior(axis, children)
     }
 }
