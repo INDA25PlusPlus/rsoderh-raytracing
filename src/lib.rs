@@ -3,11 +3,12 @@ use winit::event_loop::EventLoop;
 use crate::app::App;
 
 pub mod app;
+pub(crate) mod asset;
 pub(crate) mod bvh;
 pub(crate) mod camera;
 pub(crate) mod hdr;
+pub(crate) mod mesh;
 pub(crate) mod scene;
-pub(crate) mod shader;
 pub mod state;
 pub(crate) mod texture;
 

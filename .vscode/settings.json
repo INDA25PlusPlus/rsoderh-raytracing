@@ -21,6 +21,6 @@
         "znear"
     ],
     "rust-analyzer.cargo.features": [
-        "runtime-shader-src"
+        "runtime-asset-src"
     ]
 }

@@ -107,6 +107,22 @@ struct Plane {
     material_id: u32,
 }
 
+struct Triangle {
+    /// The triangle's 1st corner, as index into `vertices`.
+    vertex_0: u32,
+    /// The triangle's 2st corner, as index into `vertices`.
+    vertex_1: u32,
+    /// The triangle's 3st corner, as index into `vertices`.
+    vertex_2: u32,
+    /// The triangle's 1st corner's normal, as index into `normals`.
+    normal_0: u32,
+    /// The triangle's 2st corner's normal, as index into `normals`.
+    normal_1: u32,
+    /// The triangle's 3st corner's normal, as index into `normals`.
+    normal_2: u32,
+    material_id: u32,
+}
+
 struct PrimitiveInfo {
     /// Which object array this primitive is in. 0 for spheres and 1 for planes.
     primitive_type: u32,
@@ -149,12 +165,21 @@ var<storage, read> spheres: array<Sphere>;
 var<storage, read> planes: array<Plane>;
 
 @group(2) @binding(3)
-var<storage, read> primitives: array<PrimitiveInfo>;
+var<storage, read> vertices: array<vec3<f32>>;
 
 @group(2) @binding(4)
+var<storage, read> normals: array<vec3<f32>>;
+
+@group(2) @binding(5)
+var<storage, read> triangles: array<Triangle>;
+
+@group(2) @binding(6)
+var<storage, read> primitives: array<PrimitiveInfo>;
+
+@group(2) @binding(7)
 var<storage, read> bvh_nodes: array<BvhNode>;
 
-const NUM_SAMPLES: u32 = 10;
+const NUM_SAMPLES: u32 = 4;
 const MAX_BOUNCES: u32 = 10;
 
 // Largest representable f32 (actual IEEE infinity can't be used).
@@ -330,6 +355,67 @@ fn cast_ray_plane(ray: Ray, plane: Plane) -> HitInfo {
     );
 }
 
+/// Algorithm provided by ChatGPT. :)
+fn cast_ray_triangle(ray: Ray, triangle: Triangle) -> HitInfo {
+    let a = vertices[triangle.vertex_0];
+    let b = vertices[triangle.vertex_1];
+    let c = vertices[triangle.vertex_2];
+    
+    let pos = a;
+    let edge_0 = b - a;
+    let edge_1 = c - a;
+    
+    let perp_to_edge_0 = cross(ray.origin - pos, edge_0);
+    let perp_to_edge_1 = cross(ray.direction, edge_1);
+    let determinant = dot(edge_0, perp_to_edge_1);
+    let inverse_determinant = 1. / determinant;
+    
+    if abs(determinant) < 1.0e-8 {
+        // Ray is parallel to triangle.
+        return NO_HIT;
+    }
+    
+    // Barycentric coordinates
+    let u = dot(ray.origin - pos, perp_to_edge_1) * inverse_determinant;
+    let v = dot(ray.direction, perp_to_edge_0) * inverse_determinant;
+    
+    if u < 0. || 1. < u {
+        return NO_HIT;
+    }
+    if v < 0. || 1. < (u + v) {
+        return NO_HIT;
+    }
+    
+    var t = dot(edge_1, perp_to_edge_0) * inverse_determinant;
+    // Ignore collisions which originate very close to surface
+    if t < 0.001 {
+        // Intersection is behind the ray origin.
+        return NO_HIT;
+    }
+    
+    // Interpolate vertex normals
+    let normal_0 = normals[triangle.normal_0];
+    let normal_1 = normals[triangle.normal_1];
+    let normal_2 = normals[triangle.normal_2];
+    
+    var normal =
+        normalize((1. - u - v) * normal_0 + u * normal_1 + v * normal_2);
+    
+    if dot(normal, ray.direction) > 0. {
+        // Ray hit the triangle's back side, flip normal.
+        normal *= -1.;
+    }
+    
+    return HitInfo(
+        true,
+        t,
+        ray.origin + ray.direction * t,
+        normal,
+        triangle.material_id,
+    );
+}
+
+
 fn cast_ray_bvh(ray: Ray) -> HitInfo {
     let ray_inv_direction = 1. / ray.direction;
     
@@ -369,6 +455,14 @@ fn cast_ray_bvh(ray: Ray) -> HitInfo {
                             let plane = planes[info.index];
                             
                             let info = cast_ray_plane(ray, plane);
+                            if info.did_hit && info.distance < result.distance {
+                                result = info;
+                            }
+                        }
+                        case 2 {
+                            let triangle = triangles[info.index];
+                            
+                            let info = cast_ray_triangle(ray, triangle);
                             if info.did_hit && info.distance < result.distance {
                                 result = info;
                             }

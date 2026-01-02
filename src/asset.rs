@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-#[cfg(feature = "runtime-shader-src")]
+#[cfg(feature = "runtime-asset-src")]
 #[doc(hidden)]
 pub fn _load_path_filesystem(shader_file_path: &str, source_file_path: &str) -> Cow<'static, str> {
     use std::{fs, path};
@@ -25,23 +25,28 @@ pub fn _assemble_shader_module_descriptor(
     }
 }
 
+macro_rules! include_str {
+    ($path:expr $(,)?) => {{
+        #[cfg(feature = "runtime-asset-src")]
+        let source = crate::asset::_load_path_filesystem($path, file!());
+
+        #[cfg(not(feature = "runtime-asset-src"))]
+        let source = std::borrow::Cow::Borrowed(core::include_str!($path));
+
+        source
+    }};
+}
+
 /// Load WGSL source code from a file at compile time or run time, depending on if the
-/// `runtime-shader-src` feature is enabled.
+/// `runtime-asset-src` feature is enabled.
 ///
 /// The loaded path is relative to the path of the file containing the macro call, in the same way
 /// as [`include_str!`] operates.
 macro_rules! include_wgsl {
-    ($path:expr $(,)?) => {{
-        use crate::shader::*;
-
-        #[cfg(feature = "runtime-shader-src")]
-        let source = _load_path_filesystem($path, file!());
-
-        #[cfg(not(feature = "runtime-shader-src"))]
-        let source = std::borrow::Cow::Borrowed(include_str!($path));
-
-        _assemble_shader_module_descriptor($path, source)
-    }};
+    ($path:expr $(,)?) => {
+        crate::asset::_assemble_shader_module_descriptor($path, crate::asset::include_str!($path))
+    };
 }
 
+pub(crate) use include_str;
 pub(crate) use include_wgsl;

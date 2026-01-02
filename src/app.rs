@@ -10,7 +10,9 @@ use winit::{
 };
 
 use crate::{
+    asset,
     camera::{Camera, KeyboardLayout},
+    mesh::{Mesh, PackedMeshes},
     scene::{Material, Plane, Scene, Sphere},
     state::State,
 };
@@ -166,6 +168,11 @@ impl ApplicationHandler<State> for App {
                 right: vec3(10., 0., 0.),
                 material_id: 2,
             }],
+            meshes: PackedMeshes::pack_meshes(&[
+                // Suzanne is way to expensive...
+                // Mesh::load(asset::include_str!("../assets/suzanne.obj")).expect("Uh oh..."),
+                Mesh::load(asset::include_str!("../assets/cube.obj")).expect("Uh oh..."),
+            ]),
         };
 
         let keyboard_layout = KeyboardLayout::parse_config("dash", "c").unwrap();

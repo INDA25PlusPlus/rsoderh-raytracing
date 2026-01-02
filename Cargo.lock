@@ -1529,6 +1529,7 @@ dependencies = [
  "log",
  "ordered-float",
  "pollster",
+ "wavefront_obj",
  "wgpu",
  "winit",
 ]
@@ -1966,6 +1967,12 @@ checksum = "cbc538057e648b67f72a982e708d485b2efa771e1ac05fec311f9f63e5800db4"
 dependencies = [
  "unicode-ident",
 ]
+
+[[package]]
+name = "wavefront_obj"
+version = "11.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "934504ea79927c25f18e980053b64269490284129b327334fc2591daf1539b9c"
 
 [[package]]
 name = "wayland-backend"

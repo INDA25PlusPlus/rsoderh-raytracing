@@ -2,7 +2,7 @@ use std::ops::{self, Index};
 
 use glam::{Mat3, Vec3, vec3};
 
-use crate::camera::Camera;
+use crate::{camera::Camera, mesh::PackedMeshes};
 
 #[derive(Debug, Clone, encase::ShaderType)]
 pub struct Material {
@@ -131,8 +131,27 @@ impl ops::BitOr<&Bounds3> for &Bounds3 {
     }
 }
 
-pub trait Hittable {
+pub trait Hittable: HittableClone {
     fn bounds(&self) -> Bounds3;
+}
+
+pub trait HittableClone {
+    fn clone_box(&self) -> Box<dyn Hittable>;
+}
+
+impl<T> HittableClone for T
+where
+    T: 'static + Hittable + Clone,
+{
+    fn clone_box(&self) -> Box<dyn Hittable> {
+        Box::new(self.clone())
+    }
+}
+
+impl Clone for Box<dyn Hittable> {
+    fn clone(&self) -> Self {
+        self.clone_box()
+    }
 }
 
 #[derive(Debug, Clone, encase::ShaderType)]
@@ -197,5 +216,6 @@ pub struct Scene {
     pub materials: Vec<Material>,
     pub spheres: Vec<Sphere>,
     pub planes: Vec<Plane>,
+    pub meshes: PackedMeshes,
     pub camera: Camera,
 }

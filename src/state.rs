@@ -14,11 +14,12 @@ use winit::{
 use wasm_bindgen::prelude::*;
 
 use crate::{
+    asset,
     bvh::build_bvh,
     camera::{Camera, CameraController, CameraUniform, KeyboardLayout},
     hdr,
+    mesh::TriangleUniform,
     scene::Scene,
-    shader,
 };
 
 // This will store the state of our game
@@ -232,6 +233,31 @@ impl State {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
+        let vertices_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Vertices"),
+            contents: &encase::StorageBuffer::<()>::content_of::<_, Vec<u8>>(
+                &scene.meshes.vertices(),
+            )
+            .unwrap(),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+        let normals_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Normals"),
+            contents: &encase::StorageBuffer::<()>::content_of::<_, Vec<u8>>(
+                &scene.meshes.normals(),
+            )
+            .unwrap(),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+        let triangles_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Triangles"),
+            contents: &encase::StorageBuffer::<()>::content_of::<&[TriangleUniform], Vec<u8>>(
+                &scene.meshes.triangles(),
+            )
+            .unwrap(),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+
         let (primitives, bvh_nodes) = build_bvh(&scene);
 
         let primitives_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -282,7 +308,7 @@ impl State {
                         },
                         count: None,
                     },
-                    // Primitives
+                    // Triangle vertices
                     wgpu::BindGroupLayoutEntry {
                         binding: 3,
                         visibility: wgpu::ShaderStages::COMPUTE,
@@ -293,9 +319,42 @@ impl State {
                         },
                         count: None,
                     },
-                    // BVH nodes
+                    // Triangle normals
                     wgpu::BindGroupLayoutEntry {
                         binding: 4,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // Triangles
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // Primitives
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 6,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // BVH nodes
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 7,
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Storage { read_only: true },
@@ -325,17 +384,29 @@ impl State {
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: primitives_buffer.as_entire_binding(),
+                    resource: vertices_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
+                    resource: normals_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: triangles_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: primitives_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
                     resource: bvh_nodes_buffer.as_entire_binding(),
                 },
             ],
             label: Some("scene_bind_group"),
         });
 
-        let shader = device.create_shader_module(shader::include_wgsl!("shaders/shader.wgsl"));
+        let shader = device.create_shader_module(asset::include_wgsl!("shaders/shader.wgsl"));
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Compute Pipeline Layout"),

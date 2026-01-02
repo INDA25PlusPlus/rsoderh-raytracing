@@ -28,17 +28,17 @@ pub fn build_bvh(scene: &Scene) -> (Vec<PrimitiveInfoUniform>, Vec<BvhNodeUnifor
     )
 }
 
-#[derive(Clone, Copy)]
-struct PrimitiveInfo<'a> {
-    /// Which object array this primitive is in. 0 for circles and 1 for planes.
+#[derive(Clone)]
+struct PrimitiveInfo {
+    /// Which object array this primitive is in. 0 for circles, 1 for planes, and 2 for triangles.
     primitive_type: u32,
     /// The index of this primitive in its associated array.
     index: u32,
-    primitive: &'a dyn Hittable,
+    primitive: Box<dyn Hittable>,
 }
 
-impl<'a> PrimitiveInfo<'a> {
-    pub fn build_array(scene: &'a Scene) -> Vec<Self> {
+impl PrimitiveInfo {
+    pub fn build_array(scene: &Scene) -> Vec<Self> {
         let mut result = Vec::new();
         result.extend(
             scene
@@ -48,20 +48,32 @@ impl<'a> PrimitiveInfo<'a> {
                 .map(|(index, sphere)| Self {
                     primitive_type: 0,
                     index: index as u32,
-                    primitive: sphere,
+                    primitive: Box::new(sphere.clone()),
                 }),
         );
         result.extend(scene.planes.iter().enumerate().map(|(index, plane)| Self {
             primitive_type: 1,
             index: index as u32,
-            primitive: plane,
+            primitive: Box::new(plane.clone()),
         }));
+        result.extend(
+            scene
+                .meshes
+                .hittable_triangles()
+                .into_iter()
+                .enumerate()
+                .map(|(index, triangle)| Self {
+                    primitive_type: 2,
+                    index: index as u32,
+                    primitive: Box::new(triangle),
+                }),
+        );
 
         result
     }
 }
 
-impl<'a> Hittable for PrimitiveInfo<'a> {
+impl Hittable for PrimitiveInfo {
     fn bounds(&self) -> Bounds3 {
         self.primitive.bounds()
     }
@@ -106,11 +118,11 @@ impl BvhNodeUniform {
         }
     }
 
-    fn build(primitives: &mut [PrimitiveInfo<'_>]) -> Vec<BvhNodeUniform> {
+    fn build(primitives: &mut [PrimitiveInfo]) -> Vec<BvhNodeUniform> {
         let mut ordered_primitives = Vec::new();
         let mut total_nodes = 0;
         let root = hlbvh_build(primitives, &mut total_nodes, &mut ordered_primitives);
-        primitives.copy_from_slice(&mut ordered_primitives);
+        primitives.clone_from_slice(&mut ordered_primitives);
 
         let mut linear_nodes = Vec::new();
         Self::flatten_build_node(&root, &mut linear_nodes);
@@ -185,7 +197,7 @@ struct MortonPrimitive {
 }
 
 impl MortonPrimitive {
-    fn new(index: usize, primitives: &[PrimitiveInfo<'_>], bounds: &Bounds3) -> Self {
+    fn new(index: usize, primitives: &[PrimitiveInfo], bounds: &Bounds3) -> Self {
         const MORTON_BITS: u32 = 10;
         const MORTON_SCALE: u32 = 1 << MORTON_BITS;
 
@@ -214,10 +226,10 @@ impl MortonPrimitive {
     }
 }
 
-fn hlbvh_build<'a>(
-    primitives: &[PrimitiveInfo<'a>],
+fn hlbvh_build(
+    primitives: &[PrimitiveInfo],
     total_nodes: &mut usize,
-    ordered_primitives: &mut Vec<PrimitiveInfo<'a>>,
+    ordered_primitives: &mut Vec<PrimitiveInfo>,
 ) -> BvhBuildNode {
     let centers_bounds = Bounds3::from_points(
         primitives
@@ -257,12 +269,12 @@ fn hlbvh_build<'a>(
     return build_upper_sah(treelets);
 }
 
-fn emit_lbvh<'a>(
+fn emit_lbvh(
     // build_nodes: &mut Vec<BvhBuildNode>,
-    primitives: &[PrimitiveInfo<'a>],
+    primitives: &[PrimitiveInfo],
     morton_primitives: &[MortonPrimitive],
     total_nodes: &mut usize,
-    ordered_primitives: &mut Vec<PrimitiveInfo<'a>>,
+    ordered_primitives: &mut Vec<PrimitiveInfo>,
     bit_index: i8,
 ) -> BvhBuildNode {
     const MAX_PRIMITIVES_PER_NODE: usize = 5;
@@ -278,7 +290,7 @@ fn emit_lbvh<'a>(
         ordered_primitives.extend(
             morton_primitives
                 .iter()
-                .map(|morton_primitive| primitives[morton_primitive.index]),
+                .map(|morton_primitive| primitives[morton_primitive.index].clone()),
         );
         return BvhBuildNode::new_leaf(first_primitive_index..ordered_primitives.len(), bounds);
     } else {
