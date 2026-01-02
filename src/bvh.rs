@@ -6,7 +6,6 @@
 
 use std::ops::Range;
 
-use glam::Vec3;
 use ordered_float::NotNan;
 
 use crate::scene::{Axis, Bounds3, Hittable, Scene};
@@ -120,8 +119,32 @@ impl BvhNodeUniform {
 
     fn build(primitives: &mut [PrimitiveInfo]) -> Vec<BvhNodeUniform> {
         let mut ordered_primitives = Vec::new();
-        let mut total_nodes = 0;
-        let root = hlbvh_build(primitives, &mut total_nodes, &mut ordered_primitives);
+        let root = build_sah(primitives, &mut ordered_primitives);
+
+        fn tree_depth(node: &BvhBuildNode) -> u32 {
+            match node {
+                BvhBuildNode::Leaf { .. } => 0,
+                BvhBuildNode::Node { children, .. } => {
+                    let depth_a = tree_depth(&children[0]);
+                    let depth_b = tree_depth(&children[1]);
+
+                    return depth_a.max(depth_b) + 1;
+                }
+            }
+        }
+        fn tree_node_count(node: &BvhBuildNode) -> u32 {
+            match node {
+                BvhBuildNode::Leaf { .. } => 1,
+                BvhBuildNode::Node { children, .. } => {
+                    tree_node_count(&children[0]) + tree_node_count(&children[1]) + 1
+                }
+            }
+        }
+        let depth = tree_depth(&root);
+        log::info!("tree depth: {}", depth);
+        let node_count = tree_node_count(&root);
+        log::info!("tree node count: {}", node_count);
+
         primitives.clone_from_slice(&mut ordered_primitives);
 
         let mut linear_nodes = Vec::new();
@@ -189,193 +212,52 @@ impl BvhBuildNode {
     }
 }
 
-#[derive(Debug, Clone)]
-struct MortonPrimitive {
-    /// The index of the primitive in the associated array.
-    index: usize,
-    morton_code: u32,
-}
-
-impl MortonPrimitive {
-    fn new(index: usize, primitives: &[PrimitiveInfo], bounds: &Bounds3) -> Self {
-        const MORTON_BITS: u32 = 10;
-        const MORTON_SCALE: u32 = 1 << MORTON_BITS;
-
-        let center_offset = bounds.to_relative(primitives[index].bounds().center());
-        let morton_code = Self::encode_morton(center_offset * MORTON_SCALE as f32);
-
-        Self { index, morton_code }
-    }
-    /// I hate this name, but I don't understand the function well enough to make a better one.
-    fn left_shift_3(mut x: u32) -> u32 {
-        if x == (1 << 10) {
-            x -= 1;
-        }
-        x = (x | (x << 16)) & 0b00000011000000000000000011111111;
-        x = (x | (x << 8)) & 0b00000011000000001111000000001111;
-        x = (x | (x << 4)) & 0b00000011000011000011000011000011;
-        x = (x | (x << 2)) & 0b00001001001001001001001001001001;
-        return x;
-    }
-
-    /// Takes in a vector of floats in the range 0..2^10.
-    fn encode_morton(vector: Vec3) -> u32 {
-        (Self::left_shift_3(vector.z as u32) << 2)
-            | (Self::left_shift_3(vector.y as u32) << 1)
-            | Self::left_shift_3(vector.x as u32)
-    }
-}
-
-fn hlbvh_build(
-    primitives: &[PrimitiveInfo],
-    total_nodes: &mut usize,
+fn build_sah(
+    primitives: &mut [PrimitiveInfo],
     ordered_primitives: &mut Vec<PrimitiveInfo>,
 ) -> BvhBuildNode {
-    let centers_bounds = Bounds3::from_points(
-        primitives
-            .iter()
-            .map(|primitive| primitive.bounds().center()),
-    );
+    const MAX_PRIMITIVES_PER_LEAF: usize = 5; // tune (8 or 16 often good)
+    const BUCKET_COUNT: usize = 12;
 
-    let mut morton_primitives = (0..primitives.len())
-        .map(|index| MortonPrimitive::new(index, primitives, &centers_bounds))
-        .collect::<Box<[_]>>();
-    morton_primitives.sort_by_key(|morton| morton.morton_code);
+    assert!(!primitives.is_empty());
 
-    let mut treelets = Vec::new();
-    let mut start = 0;
-    for end in 1..=morton_primitives.len() {
-        /// Funny magic mask
-        const MASK: u32 = 0b00111111111111000000000000000000;
+    // Bounds of all primitives
+    let bounds = Bounds3::from_bounds(primitives.iter().map(|p| p.bounds()));
 
-        if end == morton_primitives.len()
-            || (morton_primitives[start].morton_code & MASK)
-                != (morton_primitives[end].morton_code & MASK)
-        {
-            const FIRST_BIT_INDEX: i8 = 29 - 12;
-
-            treelets.push(emit_lbvh(
-                primitives,
-                &morton_primitives[start..end],
-                total_nodes,
-                ordered_primitives,
-                FIRST_BIT_INDEX,
-            ));
-
-            start = end;
-        }
+    if primitives.len() <= MAX_PRIMITIVES_PER_LEAF {
+        let first_index = ordered_primitives.len();
+        ordered_primitives.extend(primitives.iter().cloned());
+        return BvhBuildNode::new_leaf(first_index..ordered_primitives.len(), bounds);
     }
 
-    return build_upper_sah(treelets);
-}
-
-fn emit_lbvh(
-    // build_nodes: &mut Vec<BvhBuildNode>,
-    primitives: &[PrimitiveInfo],
-    morton_primitives: &[MortonPrimitive],
-    total_nodes: &mut usize,
-    ordered_primitives: &mut Vec<PrimitiveInfo>,
-    bit_index: i8,
-) -> BvhBuildNode {
-    const MAX_PRIMITIVES_PER_NODE: usize = 5;
-
-    if bit_index == -1 || morton_primitives.len() <= MAX_PRIMITIVES_PER_NODE {
-        *total_nodes += 1;
-        let bounds = Bounds3::from_bounds(
-            morton_primitives
-                .iter()
-                .map(|morton_primitive| primitives[morton_primitive.index].bounds()),
-        );
-        let first_primitive_index = ordered_primitives.len();
-        ordered_primitives.extend(
-            morton_primitives
-                .iter()
-                .map(|morton_primitive| primitives[morton_primitive.index].clone()),
-        );
-        return BvhBuildNode::new_leaf(first_primitive_index..ordered_primitives.len(), bounds);
-    } else {
-        let mask = 1 << bit_index;
-        if (morton_primitives[0].morton_code & mask)
-            == (morton_primitives
-                .last()
-                .expect("There is at least one primitive")
-                .morton_code
-                & mask)
-        {
-            return emit_lbvh(
-                primitives,
-                morton_primitives,
-                total_nodes,
-                ordered_primitives,
-                bit_index - 1,
-            );
-        }
-
-        // TODO: Rewrite using morton_primitives.binary_search_by(f)
-        let mut search_start = 0;
-        let mut search_end = morton_primitives.len() - 1;
-        while search_start + 1 != search_end {
-            let mid = (search_start + search_end) / 2;
-            if (morton_primitives[search_start].morton_code & mask)
-                == (morton_primitives[mid].morton_code & mask)
-            {
-                search_start = mid;
-            } else {
-                search_end = mid;
-            }
-        }
-        let split_index = search_end;
-
-        let children = [
-            emit_lbvh(
-                primitives,
-                &morton_primitives[..split_index],
-                total_nodes,
-                ordered_primitives,
-                bit_index - 1,
-            ),
-            emit_lbvh(
-                primitives,
-                &morton_primitives[split_index..],
-                total_nodes,
-                ordered_primitives,
-                bit_index - 1,
-            ),
-        ];
-        // bit_index should not be negative at this point (I think...)
-        let axis = Axis::from(bit_index as u8 % 3);
-        BvhBuildNode::new_interior(axis, children)
-    }
-}
-
-fn build_upper_sah(mut treelets: Vec<BvhBuildNode>) -> BvhBuildNode {
-    // This should be true, right?
-    assert!(treelets.len() != 0);
-
-    if treelets.len() == 1 {
-        return treelets.swap_remove(0);
-    }
-
-    let bounds = Bounds3::from_bounds(treelets.iter().map(|node| node.bounds()));
-
-    let center_bounds = Bounds3::from_points(treelets.iter().map(|node| node.bounds().center()));
-
+    // Centroid bounds (used to pick axis + bucket mapping)
+    let center_bounds = Bounds3::from_points(primitives.iter().map(|p| p.bounds().center()));
     let max_axis = center_bounds.max_axis();
-    assert_ne!(center_bounds.min[max_axis], center_bounds.max[max_axis]);
+
+    // If degenerate along axis, just make a leaf (or do a median split fallback)
+    let min_c = center_bounds.min[max_axis];
+    let max_c = center_bounds.max[max_axis];
+    if min_c == max_c {
+        let first = ordered_primitives.len();
+        ordered_primitives.extend(primitives.iter().cloned());
+        return BvhBuildNode::new_leaf(first..ordered_primitives.len(), bounds);
+    }
 
     #[derive(Clone, Copy)]
     struct BucketInfo {
         count: usize,
         bounds: Bounds3,
     }
-    const BUCKET_COUNT: usize = 12;
+
     let mut buckets = [BucketInfo {
         count: 0,
         bounds: Bounds3::identity(),
     }; BUCKET_COUNT];
 
-    for treelet in &treelets {
-        let center = (treelet.bounds().min[max_axis] + treelet.bounds().max[max_axis]) * 0.5;
+    // Computes bucket index of a primitive by its centroid.
+    let bucket_index_of = |primitive: &PrimitiveInfo| -> usize {
+        let center = primitive.bounds().center()[max_axis];
+
         let mut bucket_index = (BUCKET_COUNT as f32
             * ((center - center_bounds.min[max_axis])
                 / (center_bounds.max[max_axis] - center_bounds.min[max_axis])))
@@ -383,12 +265,17 @@ fn build_upper_sah(mut treelets: Vec<BvhBuildNode>) -> BvhBuildNode {
         if bucket_index == BUCKET_COUNT {
             bucket_index = BUCKET_COUNT - 1;
         }
-        assert!(bucket_index < BUCKET_COUNT);
+        bucket_index
+    };
 
-        buckets[bucket_index].count += 1;
-        buckets[bucket_index].bounds = &buckets[bucket_index].bounds | &treelet.bounds();
+    // Fill buckets
+    for primitive in primitives.iter() {
+        let index = bucket_index_of(primitive);
+        buckets[index].count += 1;
+        buckets[index].bounds = &buckets[index].bounds | &primitive.bounds();
     }
 
+    // Evaluate SAH costs for all bucket splits.
     let mut costs = [0.0; BUCKET_COUNT - 1];
     for index in 0..(BUCKET_COUNT - 1) {
         let (buckets_0, buckets_1) = buckets.split_at(index + 1);
@@ -412,31 +299,39 @@ fn build_upper_sah(mut treelets: Vec<BvhBuildNode>) -> BvhBuildNode {
         .map(|(i, _)| i)
         .expect("costs has length > 0");
 
-    let (treelets_0, treelets_1): (Vec<BvhBuildNode>, Vec<BvhBuildNode>) =
-        treelets.into_iter().partition(|treelet| {
-            let center = (treelet.bounds().min[max_axis] + treelet.bounds().max[max_axis]) * 0.5;
-
-            let mut bucket_index = (BUCKET_COUNT as f32
-                * ((center - center_bounds.min[max_axis])
-                    / (center_bounds.max[max_axis] - center_bounds.min[max_axis])))
-                as usize;
-            if bucket_index == BUCKET_COUNT {
-                bucket_index = BUCKET_COUNT - 1;
+    // Partition prims in place so that all primitives below `split_index` belong in the bucket
+    // `min_cost_index` or lower.
+    let mut split_index = 0;
+    {
+        let mut end_index = primitives.len();
+        while split_index < end_index {
+            if bucket_index_of(&primitives[split_index]) <= min_cost_index {
+                split_index += 1;
+            } else {
+                end_index -= 1;
+                primitives.swap(split_index, end_index);
             }
-            assert!(bucket_index < BUCKET_COUNT);
-
-            bucket_index <= min_cost_index
-        });
-
-    if treelets_0.len() == 0 || treelets_1.len() == 0 {
-        dbg!(treelets_0.len(), treelets_1.len());
-        dbg!(&treelets_0, &treelets_1);
+        }
     }
-    assert!(treelets_0.len() != 0);
-    assert!(treelets_1.len() != 0);
+
+    if split_index == 0 || split_index == primitives.len() {
+        // Partitioning failed and all primitives are on one side, fall back to median split.
+        let mid = primitives.len() / 2;
+        primitives.select_nth_unstable_by(mid, |a, b| {
+            a.bounds().center()[max_axis]
+                .partial_cmp(&b.bounds().center()[max_axis])
+                .unwrap()
+        });
+        split_index = mid;
+    }
+
+    let (left, right) = primitives.split_at_mut(split_index);
 
     BvhBuildNode::new_interior(
         max_axis,
-        [build_upper_sah(treelets_0), build_upper_sah(treelets_1)],
+        [
+            build_sah(left, ordered_primitives),
+            build_sah(right, ordered_primitives),
+        ],
     )
 }
