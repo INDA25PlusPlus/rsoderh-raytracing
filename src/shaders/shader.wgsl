@@ -392,7 +392,7 @@ fn cast_ray_triangle(ray: Ray, triangle: Triangle) -> HitInfo {
     
     var t = dot(edge_1, perp_to_edge_0) * inverse_determinant;
     // Ignore collisions which originate very close to surface
-    if t < 0.001 {
+    if t < 1.0e-5 {
         // Intersection is behind the ray origin.
         return NO_HIT;
     }
