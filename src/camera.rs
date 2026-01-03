@@ -1,6 +1,7 @@
 use std::{hash::Hash, sync::Arc};
 
 use anyhow::anyhow;
+use base64::Engine;
 use cgmath::{Deg, Rad};
 use glam::{Mat3, Vec2, Vec3, vec2, vec3};
 use winit::{
@@ -22,6 +23,67 @@ impl Camera {
     /// applies the camera rotation. Note that the position isn't applied!
     pub fn rot_transform(&self) -> Mat3 {
         Mat3::from_axis_angle(Vec3::Y, self.yaw.0) * Mat3::from_axis_angle(Vec3::X, self.pitch.0)
+    }
+
+    pub fn serialize(&self) -> String {
+        // let buffer = Vec::new()k
+
+        let mut data = [0u8; size_of::<Vec3>() + size_of::<f32>() * 3];
+        // let data: &[u8; size_of::<Vec3>()] = bytemuck::cast_ref(&self.pos);
+        {
+            let (pos, rest) = data.split_at_mut(size_of::<Vec3>());
+            let (yaw, rest) = rest.split_at_mut(size_of::<f32>());
+            let (pitch, rest) = rest.split_at_mut(size_of::<f32>());
+            let (fov_y, _) = rest.split_at_mut(size_of::<f32>());
+
+            pos.copy_from_slice(bytemuck::cast_slice(&[self.pos]));
+            yaw.copy_from_slice(bytemuck::cast_slice(&[self.yaw.0]));
+            pitch.copy_from_slice(bytemuck::cast_slice(&[self.pitch.0]));
+            fov_y.copy_from_slice(bytemuck::cast_slice(&[self.fov_y.0]));
+        }
+
+        let engine = base64::engine::general_purpose::STANDARD;
+        engine.encode(data)
+    }
+
+    pub fn deserialize(encoded: &str) -> anyhow::Result<Self> {
+        let engine = base64::engine::general_purpose::STANDARD;
+        let data = engine.decode(encoded)?;
+
+        let len_error = || {
+            anyhow!(
+                "Couldn't deserialize camera: binary data ({} bytes) not 24 bytes",
+                data.len()
+            )
+        };
+
+        let (pos, rest) = data
+            .split_at_checked(size_of::<Vec3>())
+            .ok_or_else(len_error)?;
+        let (yaw, rest) = rest
+            .split_at_checked(size_of::<f32>())
+            .ok_or_else(len_error)?;
+        let (pitch, rest) = rest
+            .split_at_checked(size_of::<f32>())
+            .ok_or_else(len_error)?;
+        let (fov_y, rest) = rest
+            .split_at_checked(size_of::<f32>())
+            .ok_or_else(len_error)?;
+        if rest.len() != 0 {
+            return Err(len_error());
+        }
+
+        let pos = bytemuck::cast_slice(pos)[0];
+        let yaw = bytemuck::cast_slice(yaw)[0];
+        let pitch = bytemuck::cast_slice(pitch)[0];
+        let fov_y = bytemuck::cast_slice(fov_y)[0];
+
+        Ok(Self {
+            pos,
+            yaw: Rad(yaw),
+            pitch: Rad(pitch),
+            fov_y: Rad(fov_y),
+        })
     }
 }
 
@@ -63,10 +125,12 @@ pub struct KeyboardLayout {
     right: Key,
     /// Button which toggles mouse capturing, locking the mouse for camera movement.
     capture_mouse: Key,
+    /// Button which prints camera state.
+    print_camera_state: Key,
 }
 
 impl KeyboardLayout {
-    pub fn parse_config(movement_config: &str, capture_mouse_config: &str) -> anyhow::Result<Self> {
+    pub fn parse_config(movement_config: &str, other_config: &str) -> anyhow::Result<Self> {
         let chars = movement_config
             .chars()
             .map(|chr| chr.to_ascii_lowercase())
@@ -79,14 +143,16 @@ impl KeyboardLayout {
             ));
         };
 
-        let chars = capture_mouse_config
+        let chars = other_config
             .chars()
             .map(|chr| chr.to_ascii_lowercase())
             .collect::<Box<[char]>>();
-        let Ok(&[capture_mouse]): Result<&[char; _], _> = chars.as_ref().try_into() else {
+        let Ok(&[capture_mouse, print_camera_state]): Result<&[char; _], _> =
+            chars.as_ref().try_into()
+        else {
             return Err(anyhow!(
-                "Invalid mouse capture config '{}': expected 1 character.",
-                capture_mouse_config,
+                "Invalid mouse capture config '{}': expected 2 character.",
+                other_config,
             ));
         };
 
@@ -100,6 +166,7 @@ impl KeyboardLayout {
             back: parse_key(back),
             right: parse_key(right),
             capture_mouse: parse_key(capture_mouse),
+            print_camera_state: parse_key(print_camera_state),
         })
     }
 }
@@ -109,6 +176,7 @@ pub struct CameraController {
     layout: KeyboardLayout,
     cursor_captured: bool,
     cursor_captured_pressed: bool,
+    print_camera_state_pressed: bool,
     shift_pressed: bool,
     forward_pressed: bool,
     back_pressed: bool,
@@ -135,6 +203,7 @@ impl CameraController {
             layout,
             cursor_captured: false,
             cursor_captured_pressed: false,
+            print_camera_state_pressed: false,
             shift_pressed: false,
             forward_pressed: false,
             back_pressed: false,
@@ -151,6 +220,7 @@ impl CameraController {
         window: &Arc<Window>,
         key: &Key,
         is_pressed: bool,
+        camera: &Camera,
     ) -> anyhow::Result<()> {
         if key == &self.layout.forward {
             self.forward_pressed = is_pressed;
@@ -172,6 +242,12 @@ impl CameraController {
                     window.set_cursor_visible(true);
                 }
             }
+            self.cursor_captured_pressed = is_pressed;
+        } else if key == &self.layout.print_camera_state {
+            if !self.print_camera_state_pressed && is_pressed {
+                Self::print_camera_state(camera)
+            }
+            self.print_camera_state_pressed = is_pressed;
         } else if let Key::Named(key) = key {
             match key {
                 NamedKey::Shift => {
@@ -191,6 +267,11 @@ impl CameraController {
         if self.cursor_captured {
             self.delta_pixels += vec2(delta.0 as f32, delta.1 as f32);
         }
+    }
+
+    fn print_camera_state(camera: &Camera) {
+        println!("{:#?}", camera);
+        println!("state: (for use with --state)\n  {}", camera.serialize());
     }
 
     pub fn update(&mut self, camera: &mut Camera, delta_seconds: f32) {

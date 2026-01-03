@@ -21,12 +21,14 @@ pub struct App {
     #[cfg(target_arch = "wasm32")]
     proxy: Option<winit::event_loop::EventLoopProxy<State>>,
     keyboard_layout: KeyboardLayout,
+    camera_state: Option<String>,
     state: Option<State>,
 }
 
 impl App {
     pub fn new(
         keyboard_layout: KeyboardLayout,
+        camera_state: Option<String>,
         #[cfg(target_arch = "wasm32")] event_loop: &EventLoop<State>,
     ) -> Self {
         #[cfg(target_arch = "wasm32")]
@@ -34,6 +36,7 @@ impl App {
         Self {
             state: None,
             keyboard_layout,
+            camera_state,
             #[cfg(target_arch = "wasm32")]
             proxy,
         }
@@ -61,14 +64,18 @@ impl ApplicationHandler<State> for App {
 
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
 
-        let camera = Camera {
-            // position the camera 1 unit up and 2 units back
-            // +z is out of the screen
-            pos: (0.0, 1.0, 3.0).into(),
-            pitch: Rad(0.0),
-            yaw: Rad(0.0),
-            fov_y: Deg(100.0).into(),
-        };
+        let camera = self
+            .camera_state
+            .as_ref()
+            .map(|state| Camera::deserialize(&state).unwrap())
+            .unwrap_or(Camera {
+                // position the camera 1 unit up and 2 units back
+                // +z is out of the screen
+                pos: (0.0, 1.0, 3.0).into(),
+                pitch: Rad(0.0),
+                yaw: Rad(0.0),
+                fov_y: Deg(100.0).into(),
+            });
         let scene = Scene {
             camera,
             materials: vec![

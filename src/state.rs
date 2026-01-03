@@ -529,7 +529,7 @@ impl State {
         is_pressed: bool,
     ) -> anyhow::Result<()> {
         self.camera_controller
-            .handle_key(&self.window, key, is_pressed)?;
+            .handle_key(&self.window, key, is_pressed, &self.camera)?;
         match (key, is_pressed) {
             (Key::Named(NamedKey::Escape), true) => event_loop.exit(),
             _ => {}

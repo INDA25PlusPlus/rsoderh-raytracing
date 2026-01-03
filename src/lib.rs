@@ -15,7 +15,7 @@ pub(crate) mod texture;
 
 pub use cli::cli;
 
-pub fn run(layout: KeyboardLayout) -> anyhow::Result<()> {
+pub fn run(layout: KeyboardLayout, camera_state: Option<String>) -> anyhow::Result<()> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         env_logger::init();
@@ -28,6 +28,7 @@ pub fn run(layout: KeyboardLayout) -> anyhow::Result<()> {
     let event_loop = EventLoop::with_user_event().build()?;
     let mut app = App::new(
         layout,
+        camera_state,
         #[cfg(target_arch = "wasm32")]
         &event_loop,
     );

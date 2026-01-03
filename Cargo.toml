@@ -17,6 +17,7 @@ glam = { version = "0.30.9", features = ["encase", "bytemuck"] }
 ordered-float = "5.1.0"
 wavefront_obj = "11.0.0"
 clap = { version = "4.5.48", features = ["derive"] }
+base64 = "0.22.1"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
