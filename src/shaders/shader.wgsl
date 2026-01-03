@@ -247,7 +247,7 @@ fn ray_intersects_bounds(
 }
 
 fn cast_ray_sphere(ray: Ray, sphere: Sphere) -> HitInfo {
-    const EPSILON = 0.0001;
+    const EPSILON = 1.0e-4;
     
     let l = ray.origin - sphere.pos;
     let a = dot(ray.direction, ray.direction);
@@ -298,7 +298,7 @@ fn cast_ray_sphere(ray: Ray, sphere: Sphere) -> HitInfo {
     //   considered as having originated inside the sphere, being reflected into
     //   it.
     if length_squared(sphere.pos - ray.origin) - sphere.radius * sphere.radius
-        < EPSILON
+        < 1.0e-6
     {
         // Ray originates within sphere, flip normal.
         normal *= -1.;
