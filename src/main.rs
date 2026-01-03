@@ -1,3 +1,3 @@
 fn main() -> anyhow::Result<()> {
-    rsoderh_raytracing::run()
+    rsoderh_raytracing::cli()
 }

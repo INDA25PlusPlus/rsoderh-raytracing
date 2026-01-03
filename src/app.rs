@@ -20,15 +20,20 @@ use crate::{
 pub struct App {
     #[cfg(target_arch = "wasm32")]
     proxy: Option<winit::event_loop::EventLoopProxy<State>>,
+    keyboard_layout: KeyboardLayout,
     state: Option<State>,
 }
 
 impl App {
-    pub fn new(#[cfg(target_arch = "wasm32")] event_loop: &EventLoop<State>) -> Self {
+    pub fn new(
+        keyboard_layout: KeyboardLayout,
+        #[cfg(target_arch = "wasm32")] event_loop: &EventLoop<State>,
+    ) -> Self {
         #[cfg(target_arch = "wasm32")]
         let proxy = Some(event_loop.create_proxy());
         Self {
             state: None,
+            keyboard_layout,
             #[cfg(target_arch = "wasm32")]
             proxy,
         }
@@ -175,14 +180,14 @@ impl ApplicationHandler<State> for App {
             ]),
         };
 
-        let keyboard_layout = KeyboardLayout::parse_config("dash", "c").unwrap();
-
         #[cfg(not(target_arch = "wasm32"))]
         {
             // If we are not on web we can use pollster to
             // await the
-            self.state =
-                Some(pollster::block_on(State::new(window, keyboard_layout, scene)).unwrap());
+            self.state = Some(
+                pollster::block_on(State::new(window, self.keyboard_layout.clone(), scene))
+                    .unwrap(),
+            );
         }
 
         #[cfg(target_arch = "wasm32")]
@@ -194,7 +199,7 @@ impl ApplicationHandler<State> for App {
                     assert!(
                         proxy
                             .send_event(
-                                State::new(window, keyboard_layout, scene)
+                                State::new(window, self.keyboard_layout.clone(), scene)
                                     .await
                                     .expect("Unable to create canvas!!!")
                             )
