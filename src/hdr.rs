@@ -67,10 +67,11 @@ fn create_render_pipeline(
 pub struct HdrPipeline {
     pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
+    pub sample_count: u32,
+    pub cumulative_light_texture: texture::Texture,
     pub texture: texture::Texture,
     width: u32,
     height: u32,
-    format: wgpu::TextureFormat,
     layout: wgpu::BindGroupLayout,
 }
 
@@ -78,10 +79,6 @@ impl HdrPipeline {
     pub fn new(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> Self {
         let width = config.width;
         let height = config.height;
-
-        // We could use `Rgba32Float`, but that requires some extra
-        // features to be enabled for rendering.
-        let format = wgpu::TextureFormat::Rgba16Float;
 
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Hdr::layout"),
@@ -106,8 +103,8 @@ impl HdrPipeline {
             ],
         });
 
-        let (texture, bind_group) =
-            Self::create_texture_and_bind_group(device, &layout, width, height);
+        let (texture, cumulative_light_texture, bind_group) =
+            Self::create_textures_and_bind_group(device, &layout, width, height);
 
         // We'll cover the shader next
         let shader = asset::include_wgsl!("shaders/hdr.wgsl");
@@ -133,17 +130,19 @@ impl HdrPipeline {
             pipeline,
             bind_group,
             layout,
+            sample_count: 0,
             texture,
+            cumulative_light_texture,
             width,
             height,
-            format,
         }
     }
 
     /// Resize the HDR texture
     pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
-        (self.texture, self.bind_group) =
-            Self::create_texture_and_bind_group(device, &self.layout, width, height);
+        self.sample_count = 0;
+        (self.texture, self.cumulative_light_texture, self.bind_group) =
+            Self::create_textures_and_bind_group(device, &self.layout, width, height);
         self.width = width;
         self.height = height;
     }
@@ -153,9 +152,9 @@ impl HdrPipeline {
         &self.texture.view
     }
 
-    /// The format of the HDR texture
-    pub fn format(&self) -> wgpu::TextureFormat {
-        self.format
+    /// Exposes the cumulative light texture
+    pub fn cumulative_light_view(&self) -> &wgpu::TextureView {
+        &self.cumulative_light_texture.view
     }
 
     /// This renders the internal HDR texture to the [TextureView]
@@ -181,17 +180,14 @@ impl HdrPipeline {
         pass.draw(0..3, 0..1);
     }
 
-    fn create_texture_and_bind_group(
+    fn create_texture(
+        label: &str,
         device: &wgpu::Device,
-        layout: &wgpu::BindGroupLayout,
         width: u32,
         height: u32,
-    ) -> (texture::Texture, wgpu::BindGroup) {
-        // We could use `Rgba32Float`, but that requires some extra features to be enabled for
-        // rendering.
-        let format = wgpu::TextureFormat::Rgba16Float;
-
-        let texture = texture::Texture::create_2d_texture(
+        format: wgpu::TextureFormat,
+    ) -> texture::Texture {
+        texture::Texture::create_2d_texture(
             device,
             width,
             height,
@@ -200,7 +196,30 @@ impl HdrPipeline {
                 | wgpu::TextureUsages::STORAGE_BINDING
                 | wgpu::TextureUsages::RENDER_ATTACHMENT,
             wgpu::FilterMode::Nearest,
-            Some("Hdr::texture"),
+            Some(label),
+        )
+    }
+
+    fn create_textures_and_bind_group(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        width: u32,
+        height: u32,
+    ) -> (texture::Texture, texture::Texture, wgpu::BindGroup) {
+        let texture = Self::create_texture(
+            "HdrPipeline::texture",
+            device,
+            width,
+            height,
+            // Only 16-bit float textures support filtering, which I need (I think...)
+            wgpu::TextureFormat::Rgba16Float,
+        );
+        let cumulative_light_texture = Self::create_texture(
+            "HdrPipeline::cumulative_light_texture",
+            device,
+            width,
+            height,
+            wgpu::TextureFormat::Rgba32Float,
         );
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -218,6 +237,6 @@ impl HdrPipeline {
             ],
         });
 
-        (texture, bind_group)
+        (texture, cumulative_light_texture, bind_group)
     }
 }

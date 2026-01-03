@@ -145,6 +145,8 @@ struct BvhNode {
 
 @group(0) @binding(0)
 var out_texture: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(1)
+var cumulative_light_texture: texture_storage_2d<rgba32float, read_write>;
 
 @group(1) @binding(0)
 var<uniform> camera: Camera;
@@ -154,6 +156,9 @@ var<uniform> resolution: vec2<u32>;
 
 @group(1) @binding(2)
 var<uniform> time_secs: f32;
+
+@group(1) @binding(3)
+var<uniform> sample_count: u32;
 
 @group(2) @binding(0)
 var<storage, read> materials: array<Material>;
@@ -179,7 +184,6 @@ var<storage, read> primitives: array<PrimitiveInfo>;
 @group(2) @binding(7)
 var<storage, read> bvh_nodes: array<BvhNode>;
 
-const NUM_SAMPLES: u32 = 4;
 const MAX_BOUNCES: u32 = 10;
 
 // Largest representable f32 (actual IEEE infinity can't be used).
@@ -552,14 +556,24 @@ fn cast_ray(ray: Ray) -> HitInfo {
 
 // Random number generator
 
-// Returns a random float in the range [0,1), updating the RNG state in the
-// process.
-fn random_uniform(rng_state: ptr<function, u32>) -> f32 {
+fn salt_rng(rng_state: ptr<function, u32>, salt: u32) {
+    *rng_state = *rng_state ^ salt;
+    // Mix RNG state
+    random_u32_uniform(rng_state);
+}
+
+fn random_u32_uniform(rng_state: ptr<function, u32>) -> u32 {
     *rng_state = *rng_state * 747796405 + 2891336453;
     var result = ((*rng_state >> ((*rng_state >> 28) + 4)) ^ *rng_state)
         * 277803737;
     result = (result >> 22) ^ result;
-    return f32(result) / 4294967295.0;
+    return result;
+}
+
+// Returns a random float in the range [0,1), updating the RNG state in the
+// process.
+fn random_uniform(rng_state: ptr<function, u32>) -> f32 {
+    return f32(random_u32_uniform(rng_state)) / 4294967295.0;
 }
 
 // Returns a uniformly distributed random point on the unit circle. The point's
@@ -1034,38 +1048,41 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let pixel_coords = vec2<u32>(global_id.x, global_id.y);
     
     let pixel_index = pixel_coords.y * resolution.x + pixel_coords.x;
-    var rng_state: u32 = pixel_index;
+    var rng_state: u32 = 0;
+    salt_rng(&rng_state, pixel_index);
+    salt_rng(&rng_state, sample_count);
     
-    var pixel_color = vec3(0.0);
-    for (var i = 0u; i < NUM_SAMPLES; i++) {
-        let jittered_pixel_coords =
-            vec2<f32>(pixel_coords) + random_in_circle_uniform(&rng_state);
-        
-        // Each component is in the range -1.0 to 1.0.
-        let screen_coords =
-            ((jittered_pixel_coords / vec2<f32>(resolution)) * 2.0
-                - vec2<f32>(1.0))
-                * vec2<f32>(1.0, -1.0);
-        
-        // Let the b be the vertical component of ray_camera_space. For the top
-        // row of pixels we want the triangle with a base of 1 and height of b
-        // to have the angle opposite to b be equal to fov_y/2.
-        // The definition of sin gives us this equation: sin(fov_y/2) = b / 1
-        let max_y_component = sin(camera.fov_y / 2);
-        
-        let aspect_ratio = f32(resolution.x) / f32(resolution.y);
-        
-        let ray_camera_space = vec3<f32>(
-            screen_coords.x * max_y_component * aspect_ratio,
-            screen_coords.y * max_y_component,
-            -1.0,
-        );
-        let ray = Ray(camera.pos, normalize(camera.rot_transform * ray_camera_space));
-        
-        pixel_color += trace_ray(ray, &rng_state);
-    }
-    pixel_color /= f32(NUM_SAMPLES);
+    let jittered_pixel_coords =
+        vec2<f32>(pixel_coords) + random_in_circle_uniform(&rng_state);
     
+    // Each component is in the range -1.0 to 1.0.
+    let screen_coords =
+        ((jittered_pixel_coords / vec2<f32>(resolution)) * 2.0
+            - vec2<f32>(1.0))
+            * vec2<f32>(1.0, -1.0);
     
+    // Let the b be the vertical component of ray_camera_space. For the top
+    // row of pixels we want the triangle with a base of 1 and height of b
+    // to have the angle opposite to b be equal to fov_y/2.
+    // The definition of sin gives us this equation: sin(fov_y/2) = b / 1
+    let max_y_component = sin(camera.fov_y / 2);
+    
+    let aspect_ratio = f32(resolution.x) / f32(resolution.y);
+    
+    let ray_camera_space = vec3<f32>(
+        screen_coords.x * max_y_component * aspect_ratio,
+        screen_coords.y * max_y_component,
+        -1.0,
+    );
+    let ray = Ray(camera.pos, normalize(camera.rot_transform * ray_camera_space));
+    
+    let sample_light = trace_ray(ray, &rng_state);
+    
+    // The total collected light over cumulative frames.
+    let total_light = textureLoad(cumulative_light_texture, pixel_coords).xyz
+        + sample_light;
+    let pixel_color = total_light / f32(sample_count + 1);
+    
+    textureStore(cumulative_light_texture, pixel_coords, vec4<f32>(total_light, 1.0));
     textureStore(out_texture, pixel_coords, vec4<f32>(pixel_color, 1.0));
 }

@@ -1,4 +1,5 @@
 use std::{
+    hash::{DefaultHasher, Hash, Hasher},
     sync::Arc,
     time::{self, Instant},
 };
@@ -26,6 +27,7 @@ use crate::{
 pub struct State {
     pub start_time: time::Instant,
     pub last_tick_time: time::Instant,
+    pub last_frame_camera_hash: Option<u64>,
     pub surface: wgpu::Surface<'static>,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -41,6 +43,7 @@ pub struct State {
     pub camera_buffer: wgpu::Buffer,
     pub resolution_buffer: wgpu::Buffer,
     pub time_secs_buffer: wgpu::Buffer,
+    pub sample_count_buffer: wgpu::Buffer,
     pub render_bind_group: wgpu::BindGroup,
     pub scene_bind_group: wgpu::BindGroup,
 }
@@ -72,7 +75,8 @@ impl State {
         let adapter = instance.request_adapter(&Default::default()).await.unwrap();
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
-                required_features: wgpu::Features::CLEAR_TEXTURE,
+                required_features: wgpu::Features::CLEAR_TEXTURE
+                    | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
                 ..Default::default()
             })
             .await
@@ -115,15 +119,32 @@ impl State {
                         },
                         count: None,
                     },
+                    // Cumulative light texture
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::ReadWrite,
+                            format: wgpu::TextureFormat::Rgba32Float,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
                 ],
             });
         let texture_bind_group = device.create_bind_group(&BindGroupDescriptor {
             label: Some("texture_bind_group"),
             layout: &texture_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(hdr.view()),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(hdr.view()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&hdr.cumulative_light_view()),
+                },
+            ],
         });
 
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -144,6 +165,12 @@ impl State {
         let time_secs_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Time Secs"),
             contents: bytemuck::cast_slice(&[0.0f32]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let sample_count_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Sample Count"),
+            contents: bytemuck::cast_slice(&[0u32]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
@@ -183,6 +210,17 @@ impl State {
                         },
                         count: None,
                     },
+                    // Amount of samples rendered before the current frame (i.e. 0-indexed)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
                 ],
                 label: Some("render_bind_group_layout"),
             });
@@ -201,6 +239,10 @@ impl State {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: time_secs_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: sample_count_buffer.as_entire_binding(),
                 },
             ],
             label: Some("render_bind_group"),
@@ -430,6 +472,7 @@ impl State {
         Ok(Self {
             start_time,
             last_tick_time: start_time,
+            last_frame_camera_hash: None,
             surface,
             device,
             queue,
@@ -445,6 +488,7 @@ impl State {
             camera_buffer,
             resolution_buffer,
             time_secs_buffer,
+            sample_count_buffer,
             render_bind_group,
             scene_bind_group,
         })
@@ -460,10 +504,18 @@ impl State {
             self.texture_bind_group = self.device.create_bind_group(&BindGroupDescriptor {
                 label: Some("texture_bind_group"),
                 layout: &self.texture_bind_group_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(self.hdr.view()),
-                }],
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(self.hdr.view()),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(
+                            self.hdr.cumulative_light_view(),
+                        ),
+                    },
+                ],
             });
 
             self.is_surface_configured = true;
@@ -527,22 +579,39 @@ impl State {
             return Ok(());
         }
 
-        let output = self.surface.get_current_texture()?;
-
-        let view = output
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Render Encoder"),
             });
 
-        encoder.clear_texture(
-            &self.hdr.texture.texture,
-            &wgpu::ImageSubresourceRange::default(),
+        // Update sample number
+        let mut hasher = DefaultHasher::new();
+        self.camera.hash(&mut hasher);
+        let hash = hasher.finish();
+        if Some(hash) != self.last_frame_camera_hash {
+            // Camera moved, update reset samples
+            self.last_frame_camera_hash = Some(hash);
+            self.hdr.sample_count = 0;
+
+            encoder.clear_texture(
+                &self.hdr.cumulative_light_texture.texture,
+                &wgpu::ImageSubresourceRange::default(),
+            );
+        } else {
+            self.hdr.sample_count += 1;
+        }
+        self.queue.write_buffer(
+            &self.sample_count_buffer,
+            0,
+            bytemuck::cast_slice(&[self.hdr.sample_count]),
         );
+
+        let output = self.surface.get_current_texture()?;
+
+        let view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
 
         {
             let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{hash::Hash, sync::Arc};
 
 use anyhow::anyhow;
 use cgmath::{Deg, Rad};
@@ -22,6 +22,16 @@ impl Camera {
     /// applies the camera rotation. Note that the position isn't applied!
     pub fn rot_transform(&self) -> Mat3 {
         Mat3::from_axis_angle(Vec3::Y, self.yaw.0) * Mat3::from_axis_angle(Vec3::X, self.pitch.0)
+    }
+}
+
+impl Hash for Camera {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // I don't care about NaN inequality. >:)
+        bytemuck::cast_ref::<_, [u32; 3]>(&self.pos).hash(state);
+        bytemuck::cast_ref::<_, u32>(&self.yaw.0).hash(state);
+        bytemuck::cast_ref::<_, u32>(&self.pitch.0).hash(state);
+        bytemuck::cast_ref::<_, u32>(&self.fov_y.0).hash(state);
     }
 }
 
