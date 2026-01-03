@@ -123,6 +123,8 @@ pub struct KeyboardLayout {
     left: Key,
     back: Key,
     right: Key,
+    down: Key,
+    up: Key,
     /// Button which toggles mouse capturing, locking the mouse for camera movement.
     capture_mouse: Key,
     /// Button which prints camera state.
@@ -135,10 +137,10 @@ impl KeyboardLayout {
             .chars()
             .map(|chr| chr.to_ascii_lowercase())
             .collect::<Box<[char]>>();
-        let Ok(&[forward, left, back, right]): Result<&[char; _], _> = chars.as_ref().try_into()
+        let Ok(&[forward, left, back, right, down, up]): Result<&[char; _], _> = chars.as_ref().try_into()
         else {
             return Err(anyhow!(
-                "Invalid keyboard config '{}': expected 4 characters.",
+                "Invalid keyboard config '{}': expected 6 characters.",
                 movement_config,
             ));
         };
@@ -165,6 +167,8 @@ impl KeyboardLayout {
             left: parse_key(left),
             back: parse_key(back),
             right: parse_key(right),
+            down: parse_key(down),
+            up: parse_key(up),
             capture_mouse: parse_key(capture_mouse),
             print_camera_state: parse_key(print_camera_state),
         })
@@ -177,12 +181,13 @@ pub struct CameraController {
     cursor_captured: bool,
     cursor_captured_pressed: bool,
     print_camera_state_pressed: bool,
-    shift_pressed: bool,
     forward_pressed: bool,
     back_pressed: bool,
     left_pressed: bool,
     right_pressed: bool,
-    space_pressed: bool,
+    up_pressed: bool,
+    down_pressed: bool,
+    slow_pressed: bool,
     velocity: Vec3,
     delta_pixels: Vec2,
 }
@@ -197,6 +202,8 @@ impl CameraController {
     /// Camera turn factor in degrees / pixel.
     /// Decides the amount of degrees to turn per pixel the cursor was moved.
     const TURN_FACTOR: f32 = 0.25;
+    /// How much ACCELERATION and MAX_SPEED are scaled by when shift is pressed.
+    const SLOW_FACTOR: f32 = 0.1;
 
     pub fn new(layout: KeyboardLayout) -> Self {
         Self {
@@ -204,12 +211,13 @@ impl CameraController {
             cursor_captured: false,
             cursor_captured_pressed: false,
             print_camera_state_pressed: false,
-            shift_pressed: false,
             forward_pressed: false,
             back_pressed: false,
             left_pressed: false,
             right_pressed: false,
-            space_pressed: false,
+            up_pressed: false,
+            down_pressed: false,
+            slow_pressed: false,
             velocity: Vec3::ZERO,
             delta_pixels: Vec2::ZERO,
         }
@@ -230,6 +238,10 @@ impl CameraController {
             self.left_pressed = is_pressed;
         } else if key == &self.layout.right {
             self.right_pressed = is_pressed;
+        } else if key == &self.layout.down {
+            self.down_pressed = is_pressed;
+        } else if key == &self.layout.up {
+            self.up_pressed = is_pressed;
         } else if key == &self.layout.capture_mouse {
             if !self.cursor_captured_pressed && is_pressed {
                 self.cursor_captured = !self.cursor_captured;
@@ -251,10 +263,7 @@ impl CameraController {
         } else if let Key::Named(key) = key {
             match key {
                 NamedKey::Shift => {
-                    self.shift_pressed = is_pressed;
-                }
-                NamedKey::Space => {
-                    self.space_pressed = is_pressed;
+                    self.slow_pressed = is_pressed;
                 }
                 _ => {}
             }
@@ -282,17 +291,23 @@ impl CameraController {
             * vec3(
                 (if self.right_pressed { 1. } else { 0. })
                     + (if self.left_pressed { -1. } else { 0. }),
-                (if self.space_pressed { 1. } else { 0. })
-                    + (if self.shift_pressed { -1. } else { 0. }),
+                (if self.up_pressed { 1. } else { 0. })
+                    + (if self.down_pressed { -1. } else { 0. }),
                 (if self.back_pressed { 1. } else { 0. })
                     + (if self.forward_pressed { -1. } else { 0. }),
             );
-        let target_velocity = velocity_direction.normalize_or_zero() * Self::MAX_SPEED;
+        let factor = if self.slow_pressed {
+            Self::SLOW_FACTOR
+        } else {
+            1.
+        };
+        let target_velocity = velocity_direction.normalize_or_zero() * Self::MAX_SPEED * factor;
+        
 
         let acceleration = if target_velocity == Vec3::ZERO {
             Self::FRICTION
         } else {
-            Self::ACCELERATION
+            Self::ACCELERATION * factor
         };
 
         fn move_towards(current: Vec3, target: Vec3, max_delta: f32) -> Vec3 {

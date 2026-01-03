@@ -8,5 +8,5 @@ run-dev log_level="" *args:
 # Run with a workman friendly layout and the the runtime-asset-src feature enabled.
 run-dev-workman log_level="" *args:
     RUST_LOG="{{log_level}}" cargo run --features runtime-asset-src -- \
-        --movement-keys="dash" {{args}}
+        --movement-keys="dashqr" {{args}}
 

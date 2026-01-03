@@ -8,7 +8,7 @@ use crate::camera::KeyboardLayout;
 #[command(version, about, long_about = None)]
 struct Args {
     /// Keys used to move camera as a string of (case-insensitive) character symbols.
-    #[arg(long, default_value = "wasd")]
+    #[arg(long, default_value = "wasdqe")]
     movement_keys: String,
     /// Keys used to toggle mouse capture and print camera state as a string of (case-insensitive)
     /// character symbols.
