@@ -145,8 +145,15 @@ struct BvhNode {
 
 @group(0) @binding(0)
 var out_texture: texture_storage_2d<rgba16float, write>;
+
 @group(0) @binding(1)
 var cumulative_light_texture: texture_storage_2d<rgba32float, read_write>;
+
+@group(0) @binding(2)
+var environment_textures: binding_array<texture_cube<f32>>;
+
+@group(0) @binding(3)
+var environment_sampler: sampler;
 
 @group(1) @binding(0)
 var<uniform> camera: Camera;
@@ -159,6 +166,9 @@ var<uniform> time_secs: f32;
 
 @group(1) @binding(3)
 var<uniform> sample_count: u32;
+
+@group(1) @binding(4)
+var<uniform> environment_map_index: u32;
 
 @group(2) @binding(0)
 var<storage, read> materials: array<Material>;
@@ -614,13 +624,13 @@ fn random_in_hemisphere_uniform(normal: vec3<f32>, rng_state: ptr<function, u32>
     return point * sign(dot(normal, point));
 }
 
-fn sky_color(ray_direction: vec3<f32>) -> vec3<f32> {
-    let t = 0.5 * (ray_direction.y + 1.0);
-    return select(
-        lerp_vec3f(vec3(1.0, 1.0, 1.0), vec3(0.5, 0.7, 1.0), t),
-        vec3(0.16, 0.16, 0.16),
-        ray_direction.y < 0.,
-    );
+fn sky_light(ray_direction: vec3<f32>) -> vec3<f32> {
+    return textureSampleLevel(
+        environment_textures[environment_map_index],
+        environment_sampler,
+        ray_direction,
+        0,
+    ).xyz;
 }
 
 /// The parameters representing a surface material required for a BSDF shader.
@@ -1035,7 +1045,7 @@ fn trace_ray(ray_arg: Ray, rng_state: ptr<function, u32>) -> vec3<f32> {
                 sample.ray_direction,
             );
         } else {
-            incoming_light += sky_color(ray.direction) * throughput;
+            incoming_light += sky_light(ray.direction) * throughput;
             break;
         }
     }

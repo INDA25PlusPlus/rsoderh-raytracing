@@ -9,6 +9,8 @@ use winit::{
     window::{CursorGrabMode, Window},
 };
 
+use crate::scene::SceneState;
+
 #[derive(Debug, Clone)]
 pub struct Camera {
     pub pos: Vec3,
@@ -129,6 +131,8 @@ pub struct KeyboardLayout {
     capture_mouse: Key,
     /// Button which prints camera state.
     print_camera_state: Key,
+    /// Button which cycles the used environment HDRI.
+    next_environment: Key,
 }
 
 impl KeyboardLayout {
@@ -137,7 +141,8 @@ impl KeyboardLayout {
             .chars()
             .map(|chr| chr.to_ascii_lowercase())
             .collect::<Box<[char]>>();
-        let Ok(&[forward, left, back, right, down, up]): Result<&[char; _], _> = chars.as_ref().try_into()
+        let Ok(&[forward, left, back, right, down, up]): Result<&[char; _], _> =
+            chars.as_ref().try_into()
         else {
             return Err(anyhow!(
                 "Invalid keyboard config '{}': expected 6 characters.",
@@ -149,11 +154,11 @@ impl KeyboardLayout {
             .chars()
             .map(|chr| chr.to_ascii_lowercase())
             .collect::<Box<[char]>>();
-        let Ok(&[capture_mouse, print_camera_state]): Result<&[char; _], _> =
+        let Ok(&[capture_mouse, print_camera_state, next_environment]): Result<&[char; _], _> =
             chars.as_ref().try_into()
         else {
             return Err(anyhow!(
-                "Invalid mouse capture config '{}': expected 2 character.",
+                "Invalid mouse capture config '{}': expected 3 character.",
                 other_config,
             ));
         };
@@ -171,16 +176,18 @@ impl KeyboardLayout {
             up: parse_key(up),
             capture_mouse: parse_key(capture_mouse),
             print_camera_state: parse_key(print_camera_state),
+            next_environment: parse_key(next_environment),
         })
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct CameraController {
+pub struct SceneController {
     layout: KeyboardLayout,
     cursor_captured: bool,
     cursor_captured_pressed: bool,
     print_camera_state_pressed: bool,
+    environments_len: u32,
     forward_pressed: bool,
     back_pressed: bool,
     left_pressed: bool,
@@ -192,7 +199,7 @@ pub struct CameraController {
     delta_pixels: Vec2,
 }
 
-impl CameraController {
+impl SceneController {
     /// Maximum player speed in units / second
     const MAX_SPEED: f32 = 3.0;
     /// Acceleration in units / second^2
@@ -205,12 +212,13 @@ impl CameraController {
     /// How much ACCELERATION and MAX_SPEED are scaled by when shift is pressed.
     const SLOW_FACTOR: f32 = 0.1;
 
-    pub fn new(layout: KeyboardLayout) -> Self {
+    pub fn new(layout: KeyboardLayout, environments_len: u32) -> Self {
         Self {
             layout,
             cursor_captured: false,
             cursor_captured_pressed: false,
             print_camera_state_pressed: false,
+            environments_len,
             forward_pressed: false,
             back_pressed: false,
             left_pressed: false,
@@ -228,7 +236,7 @@ impl CameraController {
         window: &Arc<Window>,
         key: &Key,
         is_pressed: bool,
-        camera: &Camera,
+        scene: &mut SceneState,
     ) -> anyhow::Result<()> {
         if key == &self.layout.forward {
             self.forward_pressed = is_pressed;
@@ -257,9 +265,17 @@ impl CameraController {
             self.cursor_captured_pressed = is_pressed;
         } else if key == &self.layout.print_camera_state {
             if !self.print_camera_state_pressed && is_pressed {
-                Self::print_camera_state(camera)
+                Self::print_camera_state(&scene.camera)
             }
             self.print_camera_state_pressed = is_pressed;
+        } else if key == &self.layout.next_environment {
+            if is_pressed {
+                scene.environment_index += 1;
+                if scene.environment_index >= self.environments_len {
+                    scene.environment_index = 0;
+                }
+                log::info!("Selected environment {}", scene.environment_index)
+            }
         } else if let Key::Named(key) = key {
             match key {
                 NamedKey::Shift => {
@@ -283,11 +299,11 @@ impl CameraController {
         println!("state: (for use with --state)\n  {}", camera.serialize());
     }
 
-    pub fn update(&mut self, camera: &mut Camera, delta_seconds: f32) {
+    pub fn update(&mut self, scene: &mut SceneState, delta_seconds: f32) {
         // Update position.
 
         // Unscaled velocity vector
-        let velocity_direction = Mat3::from_axis_angle(Vec3::Y, camera.yaw.0)
+        let velocity_direction = Mat3::from_axis_angle(Vec3::Y, scene.camera.yaw.0)
             * vec3(
                 (if self.right_pressed { 1. } else { 0. })
                     + (if self.left_pressed { -1. } else { 0. }),
@@ -302,7 +318,6 @@ impl CameraController {
             1.
         };
         let target_velocity = velocity_direction.normalize_or_zero() * Self::MAX_SPEED * factor;
-        
 
         let acceleration = if target_velocity == Vec3::ZERO {
             Self::FRICTION
@@ -330,14 +345,14 @@ impl CameraController {
             self.velocity = Vec3::ZERO;
         }
 
-        camera.pos += self.velocity * delta_seconds;
+        scene.camera.pos += self.velocity * delta_seconds;
 
         // Update rotation.
 
         let delta_yaw = Deg(-self.delta_pixels.x * Self::TURN_FACTOR);
         let delta_pitch = Deg(-self.delta_pixels.y * Self::TURN_FACTOR);
-        camera.yaw += delta_yaw.into();
-        camera.pitch += delta_pitch.into();
+        scene.camera.yaw += delta_yaw.into();
+        scene.camera.pitch += delta_pitch.into();
         self.delta_pixels = Vec2::ZERO;
     }
 }

@@ -219,3 +219,9 @@ pub struct Scene {
     pub meshes: PackedMeshes,
     pub camera: Camera,
 }
+
+#[derive(Hash)]
+pub struct SceneState {
+    pub camera: Camera,
+    pub environment_index: u32,
+}
