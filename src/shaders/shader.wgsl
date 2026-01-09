@@ -150,7 +150,7 @@ var out_texture: texture_storage_2d<rgba16float, write>;
 var cumulative_light_texture: texture_storage_2d<rgba32float, read_write>;
 
 @group(0) @binding(2)
-var environment_textures: binding_array<texture_cube<f32>>;
+var environment_textures: binding_array<texture_2d<f32>>;
 
 @group(0) @binding(3)
 var environment_sampler: sampler;
@@ -202,6 +202,7 @@ const INFINITY = 1.70141183460469231732e+38f;
 const NEG_INFINITY = -1.70141183460469231732e+38f;
 
 const PI = 3.14159;
+const INV_PI = 1. / PI;
 
 fn lerp_vec3f(a: vec3<f32>, b: vec3<f32>, t: f32) -> vec3<f32> {
     return (1.0 - t) * a + t * b;
@@ -624,11 +625,22 @@ fn random_in_hemisphere_uniform(normal: vec3<f32>, rng_state: ptr<function, u32>
     return point * sign(dot(normal, point));
 }
 
+/// Returns the UV-coordinates on an equirectangular texture which maps to the
+/// given direction. `direction` must be normalized!
+fn direction_to_equirectangular_uv(direction: vec3<f32>) -> vec2<f32> {
+    let u = atan2(direction.z, direction.x) * 0.5 * INV_PI + 0.5;
+    let v = 0.5 - asin(direction.y) * INV_PI;
+    return vec2<f32>(u, v);
+}
+
 fn sky_light(ray_direction: vec3<f32>) -> vec3<f32> {
+    
+    let uv = direction_to_equirectangular_uv(ray_direction);
+    
     return textureSampleLevel(
         environment_textures[environment_map_index],
         environment_sampler,
-        ray_direction,
+        uv,
         0,
     ).xyz;
 }

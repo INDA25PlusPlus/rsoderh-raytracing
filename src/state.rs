@@ -23,7 +23,7 @@ use crate::{
     hdr,
     mesh::TriangleUniform,
     scene::{Scene, SceneState},
-    texture::CubeTexture,
+    texture::Texture,
 };
 
 // This will store the state of our game
@@ -39,7 +39,7 @@ pub struct State {
     pub window: Arc<Window>,
     pub pipeline: wgpu::ComputePipeline,
     pub hdr: hdr::HdrPipeline,
-    pub environments: Box<[CubeTexture]>,
+    pub environments: Box<[Texture]>,
     pub environment_sampler: wgpu::Sampler,
     pub environment_index_buffer: wgpu::Buffer,
     pub texture_bind_group_layout: wgpu::BindGroupLayout,
@@ -123,14 +123,7 @@ impl State {
         let environments = environment_sources
             .iter()
             .map(|source| {
-                CubeTexture::from_equirectangular_hdr(
-                    &device,
-                    &queue,
-                    Cursor::new(source),
-                    2048,
-                    "Environment Map",
-                )
-                .unwrap()
+                Texture::from_hdr(&device, &queue, Cursor::new(source), "Environment Map").unwrap()
             })
             .collect::<Box<[_]>>();
 
@@ -176,7 +169,7 @@ impl State {
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::Texture {
                             sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::Cube,
+                            view_dimension: wgpu::TextureViewDimension::D2,
                             multisampled: false,
                         },
                         count: Some(NonZero::new(environments.len() as u32).unwrap()),
@@ -207,7 +200,7 @@ impl State {
                     resource: wgpu::BindingResource::TextureViewArray(
                         &environments
                             .iter()
-                            .map(|environment| environment.view())
+                            .map(|environment| &environment.view)
                             .collect::<Box<[_]>>(),
                     ),
                 },
@@ -622,7 +615,7 @@ impl State {
                             &self
                                 .environments
                                 .iter()
-                                .map(|environment| environment.view())
+                                .map(|environment| &environment.view)
                                 .collect::<Box<[_]>>(),
                         ),
                     },

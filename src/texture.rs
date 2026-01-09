@@ -77,23 +77,13 @@ impl Texture {
             size,
         }
     }
-}
 
-pub struct CubeTexture {
-    texture: wgpu::Texture,
-    view: wgpu::TextureView,
-}
-
-impl CubeTexture {
-    /// Convert a HDR image containing an equirectangular environment map to a cube texture.
-    /// `size` referers to the width and height of the result texture's faces in pixels.
-    pub fn from_equirectangular_hdr(
+    pub fn from_hdr(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         data: impl Read,
-        size: u32,
         label: &str,
-    ) -> anyhow::Result<CubeTexture> {
+    ) -> anyhow::Result<Self> {
         let hdr_decoder = HdrDecoder::new(data)?;
         let meta = hdr_decoder.metadata();
 
@@ -118,18 +108,18 @@ impl CubeTexture {
         };
 
         // Create source texture and load HDR image into it.
-        let src = Texture::create_2d_texture(
+        let result = Texture::create_2d_texture(
             device,
             meta.width,
             meta.height,
             format,
             wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             wgpu::FilterMode::Linear,
-            Some("CubeTexture::from_equirectangular_hdr::src"),
+            Some(label),
         );
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
-                texture: &src.texture,
+                texture: &result.texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
@@ -142,8 +132,36 @@ impl CubeTexture {
                 ),
                 rows_per_image: Some(meta.height),
             },
-            src.size,
+            result.size,
         );
+
+        Ok(result)
+    }
+}
+
+pub struct CubeTexture {
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+}
+
+#[allow(unused)]
+impl CubeTexture {
+    /// Convert a HDR image containing an equirectangular environment map to a cube texture.
+    /// `size` referers to the width and height of the result texture's faces in pixels.
+    pub fn from_equirectangular_hdr(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        data: impl Read,
+        size: u32,
+        label: &str,
+    ) -> anyhow::Result<CubeTexture> {
+        let src = Texture::from_hdr(
+            device,
+            queue,
+            data,
+            "CubeTexture::from_equirectangular_hdr::src",
+        )?;
+        let format = src.texture.format();
 
         let dest_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
