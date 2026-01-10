@@ -36,7 +36,9 @@ struct BsdfSample {
     /// The reflected camera view direction. If this is the zero vector, some
     /// error occurred while this sample was calculated.
     ray_direction: vec3<f32>,
-    light: vec3<f32>,
+    /// How much incoming radiance from `ray_direction` is scattered in the
+    /// outgoing direction.
+    scattering: vec3<f32>,
     /// I assume that this is the probability density that the `wi_world`
     /// would've been chosen.
     pdf: f32,
@@ -143,17 +145,47 @@ struct BvhNode {
     split_axis: u32,
 }
 
+// Environment types
+
+struct EnvironmentMetadata {
+    width: u32,
+    height: u32,
+    /// Index in `environment_alias_maps` that this environment's alias table
+    /// starts at. Its length is calculated as `self.width * self.height`.
+    alias_table_start_index: u32,
+}
+
+struct AliasEntry {
+    /// Probability threshold that `alias_index` is picked over this entry's
+    /// index. Is in [0,1).
+    probability: f32,
+    /// Index which maps to a pixel on the environment texture, the "alias"
+    /// which is activated if the threshold probability is reached.
+    alias_index: u32,
+    /// The entry's value of the Probability Mass Function. (Basically a PDF but
+    /// for discreet functions.)
+    pmf: f32,
+    /// Keep struct 16-bytes aligned.
+    _pad: u32,
+}
+
 @group(0) @binding(0)
-var out_texture: texture_storage_2d<rgba16float, write>;
+var out_texture: texture_storage_2d<rgba16float, read_write>;
 
 @group(0) @binding(1)
 var cumulative_light_texture: texture_storage_2d<rgba32float, read_write>;
 
 @group(0) @binding(2)
-var environment_textures: binding_array<texture_2d<f32>>;
+var environment_sampler: sampler;
 
 @group(0) @binding(3)
-var environment_sampler: sampler;
+var environment_textures: binding_array<texture_2d<f32>>;
+
+@group(0) @binding(4)
+var<storage> environments: array<EnvironmentMetadata>;
+
+@group(0) @binding(5)
+var<storage> environment_alias_tables: array<AliasEntry>;
 
 @group(1) @binding(0)
 var<uniform> camera: Camera;
@@ -169,6 +201,9 @@ var<uniform> sample_count: u32;
 
 @group(1) @binding(4)
 var<uniform> environment_map_index: u32;
+
+@group(1) @binding(5)
+var<uniform> dev_index: u32;
 
 @group(2) @binding(0)
 var<storage, read> materials: array<Material>;
@@ -625,16 +660,166 @@ fn random_in_hemisphere_uniform(normal: vec3<f32>, rng_state: ptr<function, u32>
     return point * sign(dot(normal, point));
 }
 
+// Environment sampling
+
+/// Returns the alias entry with the given index from the given environments
+/// alias table.
+fn environment_alias_entry(index: u32, environment_index: u32) -> AliasEntry {
+    let absolute_index =
+        environments[environment_index].alias_table_start_index + index;
+    return environment_alias_tables[absolute_index];
+}
+
+fn environment_direction_alias_entry(
+    direction: vec3<f32>,
+    environment_index: u32
+) -> AliasEntry {
+    let metadata = environments[environment_index];
+    
+    let uv = direction_to_equirectangular_uv(direction);
+    let x = min(u32(uv.x * f32(metadata.width)), metadata.width - 1);
+    let y = min(u32(uv.y * f32(metadata.height)), metadata.height - 1);
+    let index = x + y * metadata.width;
+    
+    return environment_alias_entry(index, environment_index);
+}
+
+/// Sample random index according to the distribution defined by the selected
+/// environment's alias table.
+fn random_index_in_environment(
+    environment_index: u32,
+    rng_state: ptr<function, u32>,
+) -> u32 {
+    let metadata = environments[environment_index];
+    // Length of the alias table.
+    let length = metadata.width
+        * metadata.height;
+    
+    let index = min(u32(random_uniform(rng_state) * f32(length)), length - 1);
+    let entry = environment_alias_entry(index, environment_index);
+
+    return select(
+        entry.alias_index,
+        index,
+        random_uniform(rng_state) < entry.probability,
+    );
+}
+
 /// Returns the UV-coordinates on an equirectangular texture which maps to the
 /// given direction. `direction` must be normalized!
 fn direction_to_equirectangular_uv(direction: vec3<f32>) -> vec2<f32> {
-    let u = atan2(direction.z, direction.x) * 0.5 * INV_PI + 0.5;
+    let u = atan2(direction.z, direction.x) * INV_PI * 0.5 + 0.5;
     let v = 0.5 - asin(direction.y) * INV_PI;
     return vec2<f32>(u, v);
 }
 
-fn sky_light(ray_direction: vec3<f32>) -> vec3<f32> {
+/// Returns the direction which maps to the given UV-coordinates of an
+/// equirectangular texture.
+fn equirectangular_uv_to_direction(uv: vec2<f32>) -> vec3<f32> {
+    // Horizontal angle.
+    let phi = (2. * uv.x - 1.) * PI;
+    // Vertical angle.
+    let theta = PI * uv.y;
     
+    let sin_theta = sin(theta);
+    let cos_theta = cos(theta);
+    
+    return vec3<f32>(
+        sin_theta * cos(phi),
+        cos_theta,
+        sin_theta * sin(phi),
+    );
+}
+
+// Calculates the approximate solid angle of a single lat-long pixel in the
+// given environment's texture at v, i.e. the "vertical angle" where v is in
+// [0,1].
+// I think it can be thought of as "the mount of area covered in the field of
+// view".
+fn environment_pixel_solid_angle(
+    v: f32,
+    environment: EnvironmentMetadata
+) -> f32 {
+    let theta = PI * v;
+    let sin_t = max(1.0e-6, sin(theta));
+    // Change of the horizontal and vertical angle (in radians) per pixel.
+    let d_phi   = 2. * PI / f32(environment.width);
+    let d_theta = PI / f32(environment.height);
+    return d_phi * d_theta * sin_t;
+}
+
+/// Calculates the value of the given environment's HDRI's PDF for the given
+/// direction.
+fn environment_direction_pdf(
+    direction: vec3<f32>,
+    environment_index: u32
+) -> f32 {
+    let metadata = environments[environment_index];
+    
+    let uv = direction_to_equirectangular_uv(direction);
+    let x = min(u32(uv.x * f32(metadata.width)), metadata.width - 1);
+    let y = min(u32(uv.y * f32(metadata.height)), metadata.height - 1);
+    let index = x + y * metadata.width;
+    
+    let pmf = environment_alias_entry(index, environment_index).pmf;
+    let delta_solid_angle = environment_pixel_solid_angle(uv.y, metadata);
+    let pdf = pmf / delta_solid_angle;
+    
+    return pdf;
+}
+
+struct EnvironmentSample {
+    // The sampled direction.
+    direction: vec3<f32>,
+    // The incoming light for this sample.
+    radiance: vec3<f32>,
+    // The PDF's value for `direction`.
+    pdf: f32,
+}
+
+/// Sample the given environment according to the distribution defined by its
+/// alias table.
+fn sample_environment(
+    environment_index: u32,
+    rng_state: ptr<function, u32>
+) -> EnvironmentSample {
+    let metadata = environments[environment_index];
+    
+    // Pick index via alias table.
+    let index = random_index_in_environment(environment_index, rng_state);
+    
+    // Calculate index's coresponding coordinates. The indices are laid out in
+    // row-major order.
+    let x = index % metadata.width;
+    let y = index / metadata.width;
+    
+    // Add jitter within pixel to emulate continuous sampling.
+    let jitter_x = random_uniform(rng_state);
+    let jitter_y = random_uniform(rng_state);
+    
+    let uv = vec2<f32>(
+        (f32(x) + jitter_x) / f32(metadata.width),
+        (f32(y) + jitter_y) / f32(metadata.height),
+    );
+    
+    let direction = equirectangular_uv_to_direction(uv);
+    
+    let radiance = textureSampleLevel(
+        environment_textures[environment_map_index],
+        environment_sampler,
+        uv,
+        0,
+    ).xyz;
+    
+    // Calculate the PDF's value, measured per steradian.
+    let pmf = environment_alias_entry(index, environment_index).pmf;
+    let delta_solid_angle = environment_pixel_solid_angle(uv.y, metadata);
+    let pdf = pmf / delta_solid_angle;
+    
+    return EnvironmentSample(direction, radiance, pdf);
+}
+
+fn sky_light(ray_direction: vec3<f32>) -> vec3<f32> {
     let uv = direction_to_equirectangular_uv(ray_direction);
     
     return textureSampleLevel(
@@ -658,6 +843,8 @@ struct BsdfMaterial {
     /// The fresnel reflectance at normal incidence, i.e. the fraction of light
     /// that is reflected when a ray of light hits the surface head-on.
     f0: vec3<f32>,
+    /// The emitted light from the surface.
+    emission: vec3<f32>,
 }
 
 fn make_bsdf_material(material: Material) -> BsdfMaterial {
@@ -668,6 +855,7 @@ fn make_bsdf_material(material: Material) -> BsdfMaterial {
         material.metallic,
         alpha,
         surface_f0(material),
+        material.emission,
     );
 }
 
@@ -928,11 +1116,9 @@ fn bsdf_pdf_local(wo: vec3<f32>, wi: vec3<f32>, material: BsdfMaterial) -> f32 {
 fn bsdf_sample(
     ray: Ray,
     surface_normal: vec3<f32>,
-    material_in: Material,
+    material: BsdfMaterial,
     rng_state: ptr<function, u32>,
 ) -> BsdfSample {
-    let material = make_bsdf_material(material_in);
-    
     // Points from the surface point to the camera (i.e. previous surface).
     let wo_world = -ray.direction;
     
@@ -1000,7 +1186,7 @@ fn bsdf_sample(
         }
     }
     
-    let light = bsdf_eval_local(wo, wi, material);
+    let scattering = bsdf_eval_local(wo, wi, material);
     let pdf = bsdf_pdf_local(wo, wi, material);
     let wi_world = to_frame_world(frame, wi);
     
@@ -1012,7 +1198,15 @@ fn bsdf_sample(
         );
     }
     
-    return BsdfSample(wi_world, light, pdf);
+    return BsdfSample(wi_world, scattering, pdf);
+}
+
+/// Magic function which combines two sampled PDFs which gives a "sharpened"
+/// weight. (I understand this very poorly.)
+fn power_heuristic(pdf_a: f32, pdf_b: f32) -> f32 {
+    let pdf_a_2 = pdf_a * pdf_a;
+    let pdf_b_2 = pdf_b * pdf_b;
+    return pdf_a_2 / (pdf_a_2 + pdf_b_2);
 }
 
 // Trace ray through scene, returning the collected light.
@@ -1021,17 +1215,63 @@ fn trace_ray(ray_arg: Ray, rng_state: ptr<function, u32>) -> vec3<f32> {
     
     var incoming_light = vec3<f32>(0.);
     var throughput = vec3<f32>(1.);
+    var last_sample_pdf = 1.;
     
     for (var bounce_count = 0u; bounce_count < MAX_BOUNCES; bounce_count++) {
         var info = cast_ray(ray);
-        if info.did_hit {
-            let material = materials[info.material_id];
+        if !info.did_hit {
+            // Ray escaped into environment.
+            let environment_light = sky_light(ray.direction);
+            let pdf =
+                environment_direction_pdf(ray.direction, environment_map_index);
+            let weight = power_heuristic(last_sample_pdf, pdf);
             
+            incoming_light += throughput * environment_light * weight;
+            break;
+        }
+        
+        let material = make_bsdf_material(materials[info.material_id]);
+        
+        // Add surface emission with pre-bounce throughput
+        incoming_light += throughput * material.emission;
+        
+        // Do Next Event Estimation and MIS environment sample
+        {
+            let environment = sample_environment(environment_map_index, rng_state);
+            let wo_world = -ray.direction;
+            let wi_world = environment.direction;
+            
+            let cos_theta = max(0., dot(info.normal, wi_world));
+            
+            if (cos_theta > 0.0
+                && environment.pdf > 0.0
+                // Check that environment sample isn't occluded.
+                && !cast_ray_bvh(Ray(info.hit_point, environment.direction))
+                    .did_hit)
+            {
+                let frame = make_frame(info.normal);
+                let wo = to_frame_local(frame, wo_world);
+                let wi = to_frame_local(frame, wi_world);
+                
+                let scattering = bsdf_eval_local(wo, wi, material);
+                let pdf_bsdf = bsdf_pdf_local(wo, wi, material);
+                let weight = power_heuristic(environment.pdf, pdf_bsdf);
+                incoming_light += throughput
+                    * weight
+                    * environment.radiance
+                    * scattering
+                    * cos_theta
+                    / environment.pdf;
+            }
+        }
+        
+        // Sample BSDF and continue the ray path.
+        {
             let sample = bsdf_sample(ray, info.normal, material, rng_state);
             if all(sample.ray_direction == vec3<f32>(0.)) {
-                // Error occurred during sample calculation, show light as debug
-                // information.
-                incoming_light = sample.light;
+                // Error occurred during sample calculation, show scattering as
+                // debug information.
+                incoming_light = sample.scattering;
                 break;
             }
             if sample.pdf <= 0. {
@@ -1044,21 +1284,18 @@ fn trace_ray(ray_arg: Ray, rng_state: ptr<function, u32>) -> vec3<f32> {
             //   where cos(theta) = normal·wi in WORLD space,
             //                      using shading normal.
             let cos_theta = max(0., dot(info.normal, sample.ray_direction));
-            throughput *= sample.light * (cos_theta / sample.pdf);
-            incoming_light += material.emission * throughput;
+            throughput *= sample.scattering * (cos_theta / sample.pdf);
             
             if (length(throughput) < 0.001) {
                 // Ray contribution is negligible, terminate.
                 break;
             }
             
+            last_sample_pdf = sample.pdf;
             ray = Ray(
                 info.hit_point,
                 sample.ray_direction,
             );
-        } else {
-            incoming_light += sky_light(ray.direction) * throughput;
-            break;
         }
     }
     
@@ -1073,6 +1310,32 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     var rng_state: u32 = 0;
     salt_rng(&rng_state, pixel_index);
     salt_rng(&rng_state, sample_count);
+    
+    if dev_index == 2 {
+        // Draw pixels based on distribution.
+        let count = 20u;
+        for (var i = 0u; i < count; i++) {
+            let metadata = environments[environment_map_index];
+            let index =
+                random_index_in_environment(environment_map_index, &rng_state);
+            // Calculate index's coresponding coordinates. The indices are laid
+            // out in row-major order.
+            let x = index % metadata.width;
+            let y = index / metadata.width;
+            
+            let color = textureLoad(out_texture, vec2(x, y)).xyz
+                + vec3(0.1, 0.1, 0.1) / f32(count);
+            
+            textureStore(out_texture, vec2(x, y), vec4(color, 0.));
+        }
+        return;
+    } else if dev_index == 3 {
+        // Display HDRI.
+        let color = textureLoad(environment_textures[environment_map_index], pixel_coords, 0).xyz;
+        
+        textureStore(out_texture, pixel_coords, vec4(saturate(color), 0.));
+        return;
+    }
     
     let jittered_pixel_coords =
         vec2<f32>(pixel_coords) + random_in_circle_uniform(&rng_state);

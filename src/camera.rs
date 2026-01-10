@@ -276,6 +276,12 @@ impl SceneController {
                 }
                 log::info!("Selected environment {}", scene.environment_index)
             }
+        } else if let Key::Character(chr) = key
+            && let Ok(number) = chr.parse::<u8>()
+            && is_pressed
+        {
+            scene.dev_index = number as u32;
+            log::info!("Selected development index {}", scene.dev_index);
         } else if let Key::Named(key) = key {
             match key {
                 NamedKey::Shift => {

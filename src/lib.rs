@@ -7,6 +7,7 @@ pub(crate) mod asset;
 pub(crate) mod bvh;
 pub(crate) mod camera;
 mod cli;
+pub(crate) mod environments;
 pub(crate) mod hdr;
 pub(crate) mod mesh;
 pub(crate) mod scene;

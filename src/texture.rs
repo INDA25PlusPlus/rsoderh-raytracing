@@ -1,9 +1,10 @@
-use std::io::Read;
+use std::io::{BufRead, Seek};
 
-use image::{ImageDecoder, codecs::hdr::HdrDecoder};
+use image::ImageReader;
 
 use crate::asset;
 
+#[derive(Debug, Clone)]
 pub struct Texture {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
@@ -78,23 +79,32 @@ impl Texture {
         }
     }
 
-    pub fn from_hdr(
+    pub fn from_image_guess_format(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        data: impl Read,
+        data: impl BufRead + Seek,
         label: &str,
     ) -> anyhow::Result<Self> {
-        let hdr_decoder = HdrDecoder::new(data)?;
-        let meta = hdr_decoder.metadata();
+        let image = ImageReader::new(data)
+            .with_guessed_format()?
+            .decode()?
+            .into_rgb32f();
 
-        // HDR images are always in this format.
+        Self::from_rgb32float(device, queue, &image, label)
+    }
+
+    pub fn from_rgb32float(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        image: &image::Rgb32FImage,
+        label: &str,
+    ) -> anyhow::Result<Self> {
         let format = wgpu::TextureFormat::Rgba32Float;
         let pixels = {
-            let pixel_count = meta.width as usize * meta.height as usize;
-            // The image's pixels bytes in Rgb32Float format and row major order.
-            let mut pixels =
-                vec![0; pixel_count * hdr_decoder.color_type().bytes_per_pixel() as usize];
-            hdr_decoder.read_image(&mut pixels)?;
+            let pixel_count = image.width() as usize * image.height() as usize;
+            // The image's pixels's f32 in Rgb32Float format and row major order.
+            let mut pixels = vec![0.0; pixel_count * 3];
+            pixels.copy_from_slice(image.as_flat_samples().samples);
 
             let pixels_rgb: &[[f32; 3]] = bytemuck::cast_slice(&pixels);
 
@@ -110,8 +120,8 @@ impl Texture {
         // Create source texture and load HDR image into it.
         let result = Texture::create_2d_texture(
             device,
-            meta.width,
-            meta.height,
+            image.width(),
+            image.height(),
             format,
             wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             wgpu::FilterMode::Linear,
@@ -128,9 +138,9 @@ impl Texture {
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(
-                    meta.width * image::ColorType::Rgba32F.bytes_per_pixel() as u32,
+                    image.width() * image::ColorType::Rgba32F.bytes_per_pixel() as u32,
                 ),
-                rows_per_image: Some(meta.height),
+                rows_per_image: Some(image.height()),
             },
             result.size,
         );
@@ -148,14 +158,14 @@ pub struct CubeTexture {
 impl CubeTexture {
     /// Convert a HDR image containing an equirectangular environment map to a cube texture.
     /// `size` referers to the width and height of the result texture's faces in pixels.
-    pub fn from_equirectangular_hdr(
+    pub fn from_equirectangular_guess_format(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        data: impl Read,
+        data: impl BufRead + Seek,
         size: u32,
         label: &str,
     ) -> anyhow::Result<CubeTexture> {
-        let src = Texture::from_hdr(
+        let src = Texture::from_image_guess_format(
             device,
             queue,
             data,

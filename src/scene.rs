@@ -224,4 +224,7 @@ pub struct Scene {
 pub struct SceneState {
     pub camera: Camera,
     pub environment_index: u32,
+    /// Runtime configurable number in 0..=9. Can be used for any kind of quick temporary
+    /// configuration during development. Is changed via the number keys.
+    pub dev_index: u32,
 }

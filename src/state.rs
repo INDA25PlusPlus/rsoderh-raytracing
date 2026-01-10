@@ -1,6 +1,5 @@
 use std::{
     hash::{DefaultHasher, Hash, Hasher},
-    io::Cursor,
     num::NonZero,
     sync::Arc,
     time::{self, Instant},
@@ -20,10 +19,10 @@ use crate::{
     asset,
     bvh::build_bvh,
     camera::{CameraUniform, KeyboardLayout, SceneController},
+    environments::EnvironmentMaps,
     hdr,
     mesh::TriangleUniform,
     scene::{Scene, SceneState},
-    texture::Texture,
 };
 
 // This will store the state of our game
@@ -39,9 +38,10 @@ pub struct State {
     pub window: Arc<Window>,
     pub pipeline: wgpu::ComputePipeline,
     pub hdr: hdr::HdrPipeline,
-    pub environments: Box<[Texture]>,
+    pub environments: EnvironmentMaps,
     pub environment_sampler: wgpu::Sampler,
     pub environment_index_buffer: wgpu::Buffer,
+    pub dev_index_buffer: wgpu::Buffer,
     pub texture_bind_group_layout: wgpu::BindGroupLayout,
     pub texture_bind_group: wgpu::BindGroup,
     pub scene: SceneState,
@@ -120,12 +120,16 @@ impl State {
             asset::include_bytes!("../assets/hdri/winter_lake_01_2k.hdr"),
             asset::include_bytes!("../assets/hdri/passendorf_snow_2k.hdr"),
         ];
-        let environments = environment_sources
-            .iter()
-            .map(|source| {
-                Texture::from_hdr(&device, &queue, Cursor::new(source), "Environment Map").unwrap()
-            })
-            .collect::<Box<[_]>>();
+        let environments = EnvironmentMaps::new(
+            &device,
+            &queue,
+            environment_sources
+                .iter()
+                .map(|source| image::load_from_memory(source).unwrap().into_rgb32f())
+                .collect::<Box<[_]>>()
+                .as_ref(),
+        )
+        .unwrap();
 
         let environment_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -146,7 +150,7 @@ impl State {
                         binding: 0,
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::StorageTexture {
-                            access: wgpu::StorageTextureAccess::WriteOnly,
+                            access: wgpu::StorageTextureAccess::ReadWrite,
                             format: wgpu::TextureFormat::Rgba16Float,
                             view_dimension: wgpu::TextureViewDimension::D2,
                         },
@@ -163,22 +167,44 @@ impl State {
                         },
                         count: None,
                     },
-                    // Environment map texture
+                    // Environment map texture sampler
                     wgpu::BindGroupLayoutEntry {
                         binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    // Environment map textures
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::Texture {
                             sample_type: wgpu::TextureSampleType::Float { filterable: true },
                             view_dimension: wgpu::TextureViewDimension::D2,
                             multisampled: false,
                         },
-                        count: Some(NonZero::new(environments.len() as u32).unwrap()),
+                        count: Some(NonZero::new(environments.textures().len() as u32).unwrap()),
                     },
-                    // Environment map texture sampler
+                    // Environment map metadata
                     wgpu::BindGroupLayoutEntry {
-                        binding: 3,
+                        binding: 4,
                         visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // Environment alias maps
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
                         count: None,
                     },
                 ],
@@ -197,16 +223,25 @@ impl State {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&environment_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
                     resource: wgpu::BindingResource::TextureViewArray(
                         &environments
+                            .textures()
                             .iter()
                             .map(|environment| &environment.view)
                             .collect::<Box<[_]>>(),
                     ),
                 },
                 wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::Sampler(&environment_sampler),
+                    binding: 4,
+                    resource: environments.metadata_buffer().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: environments.alias_maps_buffer().as_entire_binding(),
                 },
             ],
         });
@@ -244,6 +279,12 @@ impl State {
                 contents: bytemuck::cast_slice(&[0u32]),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
+
+        let dev_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Development Index"),
+            contents: bytemuck::cast_slice(&[0u32]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
 
         let render_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -303,6 +344,18 @@ impl State {
                         },
                         count: None,
                     },
+                    // Currently selected development index (can be used used for any kind of
+                    // configuration during development).
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
                 ],
                 label: Some("render_bind_group_layout"),
             });
@@ -329,6 +382,10 @@ impl State {
                 wgpu::BindGroupEntry {
                     binding: 4,
                     resource: environment_index_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: dev_index_buffer.as_entire_binding(),
                 },
             ],
             label: Some("render_bind_group"),
@@ -555,7 +612,8 @@ impl State {
             cache: Default::default(),
         });
 
-        let scene_controller = SceneController::new(keyboard_layout, environments.len() as u32);
+        let scene_controller =
+            SceneController::new(keyboard_layout, environments.metadata().len() as u32);
 
         Ok(Self {
             start_time,
@@ -572,11 +630,13 @@ impl State {
             environments,
             environment_sampler,
             environment_index_buffer,
+            dev_index_buffer,
             texture_bind_group_layout,
             texture_bind_group,
             scene: SceneState {
                 camera: scene.camera,
                 environment_index: 0,
+                dev_index: 1,
             },
             scene_controller,
             camera_buffer,
@@ -611,17 +671,26 @@ impl State {
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&self.environment_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
                         resource: wgpu::BindingResource::TextureViewArray(
                             &self
                                 .environments
+                                .textures()
                                 .iter()
                                 .map(|environment| &environment.view)
                                 .collect::<Box<[_]>>(),
                         ),
                     },
                     wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::Sampler(&self.environment_sampler),
+                        binding: 4,
+                        resource: self.environments.metadata_buffer().as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: self.environments.alias_maps_buffer().as_entire_binding(),
                     },
                 ],
             });
@@ -681,6 +750,11 @@ impl State {
             0,
             bytemuck::cast_slice(&[self.scene.environment_index]),
         );
+        self.queue.write_buffer(
+            &self.dev_index_buffer,
+            0,
+            bytemuck::cast_slice(&[self.scene.dev_index]),
+        );
     }
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -717,6 +791,12 @@ impl State {
             &self.sample_count_buffer,
             0,
             bytemuck::cast_slice(&[self.hdr.sample_count]),
+        );
+
+        // Clear out texture. This is nice when developing. :)
+        encoder.clear_texture(
+            &self.hdr.texture.texture,
+            &wgpu::ImageSubresourceRange::default(),
         );
 
         let output = self.surface.get_current_texture()?;
