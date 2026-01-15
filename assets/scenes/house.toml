@@ -1,0 +1,112 @@
+[[material]]
+name = "ground"
+color = [ 0.95, 0.95, 0.95 ]
+roughness = 1
+metallic = 0
+emission = [ 0, 0, 0 ]
+
+[[material]]
+name = "wall"
+color = [ 0.95, 0.95, 0.95 ]
+roughness = 1
+metallic = 0
+emission = [ 0, 0, 0 ]
+
+[[material]]
+name = "roof"
+color = [ 0.67, 0.55, 0.52 ]
+roughness = 1
+metallic = 0
+emission = [ 0, 0, 0 ]
+
+[[material]]
+name = "red_plastic"
+color = [ 1.0, 0.52, 0.56 ]
+roughness = 1
+metallic = 0
+emission = [ 0, 0, 0 ]
+
+[[material]]
+name = "green_plastic"
+color = [ 0.56, 1.0, 0.52 ]
+roughness = 1
+metallic = 0
+emission = [ 0, 0, 0 ]
+
+[[material]]
+name = "blue_plastic"
+color = [ 0.52, 0.56, 1.0 ]
+roughness = 1
+metallic = 0
+emission = [ 0, 0, 0 ]
+
+[[material]]
+name = "metallic_mirror"
+color = [ 0.8, 0.8, 0.8 ]
+roughness = 0
+metallic = 1
+emission = [ 0, 0, 0 ]
+
+[[material]]
+name = "metallic_mirror_rough"
+color = [ 0.8, 0.8, 0.8 ]
+roughness = 0.5
+metallic = 1
+emission = [ 0, 0, 0 ]
+
+[[object]]
+[object.Plane]
+material = "ground"
+pos = [ -30, 0, -30 ]
+forward = [ 0, 0, 60 ]
+right = [ 60, 0, 0 ]
+
+[[object]]
+[object.Plane]
+material = "ground"
+pos = [ -30, 0, -30 ]
+forward = [ 0, 0, 60 ]
+right = [ 60, 0, 0 ]
+
+[[object]]
+[object.Mesh]
+material = "roof"
+path = "../house_roof.obj"
+
+[[object]]
+[object.Mesh]
+material = "wall"
+path = "../house_walls.obj"
+
+[[object]]
+[object.Mesh]
+material = "red_plastic"
+path = "../house_red_wall.obj"
+
+[[object]]
+[object.Mesh]
+material = "green_plastic"
+path = "../house_green_wall.obj"
+
+[[object]]
+[object.Mesh]
+material = "blue_plastic"
+path = "../house_blue_wall.obj"
+
+[[object]]
+[object.Sphere]
+material = "metallic_mirror"
+pos = [ 1.0, 1.0, 2.5 ]
+radius = 0.6
+
+[[object]]
+[object.Sphere]
+material = "metallic_mirror_rough"
+pos = [ 1.0, 1.0, 3.8 ]
+radius = 0.6
+
+[camera]
+pos = [ 0.0, 1.0, 3.0 ]
+pitch = 0.0
+yaw = 0.0
+fov_y = 100.0

@@ -404,8 +404,6 @@ impl SceneDescriptor {
                         return Err(create_material_error(i, "Mesh", &material));
                     };
 
-                    dbg!(descriptor_path.join(&path));
-
                     let content = fs::read_to_string(
                         descriptor_path
                             .parent()
