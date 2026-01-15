@@ -50,6 +50,7 @@
         devShell = craneLib.devShell {
           packages = [
             pkgs.rust-analyzer
+            pkgs.just
           ];
 
           env = {
