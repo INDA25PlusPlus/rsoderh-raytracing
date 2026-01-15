@@ -1,7 +1,5 @@
 use std::sync::Arc;
 
-use cgmath::{Deg, Rad};
-use glam::{Vec3, vec3};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 use winit::{
@@ -9,26 +7,20 @@ use winit::{
     platform::modifier_supplement::KeyEventExtModifierSupplement, window::Window,
 };
 
-use crate::{
-    asset,
-    camera::{Camera, KeyboardLayout},
-    mesh::{Mesh, PackedMeshes},
-    scene::{Material, Plane, Scene, Sphere},
-    state::State,
-};
+use crate::{camera::KeyboardLayout, scene::Scene, state::State};
 
 pub struct App {
     #[cfg(target_arch = "wasm32")]
     proxy: Option<winit::event_loop::EventLoopProxy<State>>,
     keyboard_layout: KeyboardLayout,
-    camera_state: Option<String>,
+    scene: Scene,
     state: Option<State>,
 }
 
 impl App {
     pub fn new(
         keyboard_layout: KeyboardLayout,
-        camera_state: Option<String>,
+        scene: Scene,
         #[cfg(target_arch = "wasm32")] event_loop: &EventLoop<State>,
     ) -> Self {
         #[cfg(target_arch = "wasm32")]
@@ -36,7 +28,7 @@ impl App {
         Self {
             state: None,
             keyboard_layout,
-            camera_state,
+            scene,
             #[cfg(target_arch = "wasm32")]
             proxy,
         }
@@ -64,136 +56,17 @@ impl ApplicationHandler<State> for App {
 
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
 
-        let camera = self
-            .camera_state
-            .as_ref()
-            .map(|state| Camera::deserialize(&state).unwrap())
-            .unwrap_or(Camera {
-                // position the camera 1 unit up and 2 units back
-                // +z is out of the screen
-                pos: (0.0, 1.0, 3.0).into(),
-                pitch: Rad(0.0),
-                yaw: Rad(0.0),
-                fov_y: Deg(100.0).into(),
-            });
-        let scene = Scene {
-            camera,
-            materials: vec![
-                Material {
-                    color: vec3(1.0, 0.63, 0.41),
-                    roughness: 1.,
-                    metallic: 0.,
-                    emission: Vec3::ZERO,
-                },
-                Material {
-                    color: vec3(0.56, 1.0, 0.52),
-                    roughness: 1.,
-                    metallic: 0.,
-                    emission: Vec3::ZERO,
-                },
-                // Ground
-                Material {
-                    color: vec3(0.95, 0.95, 0.95),
-                    roughness: 1.,
-                    metallic: 0.,
-                    emission: Vec3::ZERO,
-                },
-                // Marker
-                Material {
-                    color: vec3(1.0, 1.0, 1.0),
-                    roughness: 1.,
-                    metallic: 0.,
-                    emission: vec3(1.0, 0.0, 0.0),
-                },
-                // Metallic Mirror
-                Material {
-                    color: vec3(0.8, 0.8, 0.8),
-                    roughness: 0.0,
-                    metallic: 1.,
-                    emission: Vec3::ZERO,
-                },
-                // Dielectric Mirror
-                Material {
-                    color: vec3(0.8, 0.8, 0.8),
-                    roughness: 0.0,
-                    metallic: 0.,
-                    emission: Vec3::ZERO,
-                },
-            ],
-            spheres: vec![
-                Sphere {
-                    pos: vec3(0.0, 1.1, -2.0),
-                    radius: 1.0,
-                    material_id: 0,
-                },
-                Sphere {
-                    pos: vec3(1.3, 1.1, -1.5),
-                    radius: 1.3,
-                    material_id: 1,
-                },
-                // Mirrors
-                Sphere {
-                    pos: vec3(1.2, 1.1, 1.0),
-                    radius: 0.6,
-                    material_id: 4,
-                },
-                Sphere {
-                    pos: vec3(2.6, 1.1, 1.0),
-                    radius: 0.6,
-                    material_id: 5,
-                },
-                // Markers
-                Sphere {
-                    pos: vec3(0., 0., 0.),
-                    radius: 0.05,
-                    material_id: 3,
-                },
-                Sphere {
-                    pos: vec3(-4., 0., -5.),
-                    radius: 0.05,
-                    material_id: 3,
-                },
-                Sphere {
-                    pos: vec3(6., 0., 5.),
-                    radius: 0.05,
-                    material_id: 3,
-                },
-                Sphere {
-                    pos: vec3(1., -0.05, 1.),
-                    radius: 0.05,
-                    material_id: 3,
-                },
-                Sphere {
-                    pos: vec3(1.2, -0.03, 1.),
-                    radius: 0.05,
-                    material_id: 3,
-                },
-                Sphere {
-                    pos: vec3(1.4, -0.01, 1.),
-                    radius: 0.05,
-                    material_id: 3,
-                },
-            ],
-            planes: vec![Plane {
-                pos: vec3(-4., 0., -5.),
-                forward: vec3(0., 0., 10.),
-                right: vec3(10., 0., 0.),
-                material_id: 2,
-            }],
-            meshes: PackedMeshes::pack_meshes(&[
-                // Suzanne is way to expensive...
-                // Mesh::load(asset::include_str!("../assets/suzanne.obj")).expect("Uh oh..."),
-                Mesh::load(asset::include_str!("../assets/cube.obj")).expect("Uh oh..."),
-            ]),
-        };
-
         #[cfg(not(target_arch = "wasm32"))]
         {
             // If we are not on web we can use pollster to
             // await the
             self.state = Some(
-                pollster::block_on(State::new(window, self.keyboard_layout.clone(), scene))
-                    .unwrap(),
+                pollster::block_on(State::new(
+                    window,
+                    self.keyboard_layout.clone(),
+                    self.scene.clone(),
+                ))
+                .unwrap(),
             );
         }
 

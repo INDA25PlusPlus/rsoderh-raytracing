@@ -4,6 +4,7 @@
         "cdylib",
         "cgmath",
         "dashqr",
+        "descr",
         "equirect",
         "equirectangular",
         "fovy",

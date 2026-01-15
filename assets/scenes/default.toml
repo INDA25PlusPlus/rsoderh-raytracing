@@ -1,0 +1,122 @@
+[[material]]
+name = "orange_plastic"
+color = [ 1, 0.63, 0.41 ]
+roughness = 1
+metallic = 0
+emission = [ 0, 0, 0 ]
+
+[[material]]
+name = "green_plastic"
+color = [ 0.56, 1.0, 0.52 ]
+roughness = 1
+metallic = 0
+emission = [ 0, 0, 0 ]
+
+[[material]]
+name = "ground"
+color = [ 0.95, 0.95, 0.95 ]
+roughness = 1
+metallic = 0
+emission = [ 0, 0, 0 ]
+
+
+[[material]]
+name = "marker"
+color = [ 1, 1, 1 ]
+roughness = 1
+metallic = 0
+emission = [ 1, 0, 0 ]
+
+[[material]]
+name = "metallic_mirror"
+color = [ 0.8, 0.8, 0.8 ]
+roughness = 0
+metallic = 1
+emission = [ 0, 0, 0 ]
+
+[[material]]
+name = "dielectric_mirror"
+color = [ 0.8, 0.8, 0.8 ]
+roughness = 0
+metallic = 0
+emission = [ 0, 0, 0 ]
+
+[[object]]
+[object.Sphere]
+material = "orange_plastic"
+pos = [ 0, 1.1, -2 ]
+radius = 1
+
+[[object]]
+[object.Sphere]
+material = "green_plastic"
+pos = [ 1.3, 1.1, -1.5 ]
+radius = 1.3
+
+[[object]]
+[object.Sphere]
+material = "metallic_mirror"
+pos = [ 1.2, 1.1, 1.0 ]
+radius = 0.6
+
+[[object]]
+[object.Sphere]
+material = "dielectric_mirror"
+pos = [ 2.6, 1.1, 1.0 ]
+radius = 0.6
+
+[[object]]
+[object.Plane]
+material = "ground"
+pos = [ -4, 0, -5 ]
+forward = [ 0, 0, 10 ]
+right = [ 10, 0, 0 ]
+
+[[object]]
+[object.Mesh]
+material = "orange_plastic"
+path = "../cube.obj"
+
+# Markers
+
+[[object]]
+[object.Sphere]
+material = "marker"
+pos = [ 0, 0, 0 ]
+radius = 0.05
+
+[[object]]
+[object.Sphere]
+material = "marker"
+pos = [ -4, 0, -5 ]
+radius = 0.05
+
+[[object]]
+[object.Sphere]
+material = "marker"
+pos = [ 6, 0, 5 ]
+radius = 0.05
+
+[[object]]
+[object.Sphere]
+material = "marker"
+pos = [ 1, -0.05, 1 ]
+radius = 0.05
+
+[[object]]
+[object.Sphere]
+material = "marker"
+pos = [ 1.2, -0.03, 1 ]
+radius = 0.05
+
+[[object]]
+[object.Sphere]
+material = "marker"
+pos = [ 1.4, -0.01, 1 ]
+radius = 0.05
+
+[camera]
+pos = [ 0.0, 1.0, 3.0 ]
+pitch = 0.0
+yaw = 0.0
+fov_y = 100.0

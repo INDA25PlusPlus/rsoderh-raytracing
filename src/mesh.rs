@@ -26,7 +26,7 @@ fn vec3_from_vertex(vertex: &obj::Vertex) -> Vec3 {
 }
 
 impl Mesh {
-    pub fn load(src: impl AsRef<str>) -> anyhow::Result<Self> {
+    pub fn load(src: impl AsRef<str>, material_id: u32) -> anyhow::Result<Self> {
         let obj = obj::parse(src)?;
 
         let mut vertices = Vec::new();
@@ -64,7 +64,7 @@ impl Mesh {
                                         + c.2.expect("Object must include baked normals"),
                                 ),
                                 // TODO: Support loading materials from file.
-                                material_id: 0,
+                                material_id,
                             })
                         }
                         _ => None,
@@ -81,6 +81,7 @@ impl Mesh {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct PackedMeshes {
     pub vertices: Vec<Vec3>,
     pub normals: Vec<Vec3>,

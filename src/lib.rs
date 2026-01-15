@@ -1,6 +1,6 @@
 use winit::event_loop::EventLoop;
 
-use crate::{app::App, camera::KeyboardLayout};
+use crate::{app::App, camera::KeyboardLayout, scene::Scene};
 
 pub mod app;
 pub(crate) mod asset;
@@ -16,7 +16,7 @@ pub(crate) mod texture;
 
 pub use cli::cli;
 
-pub fn run(layout: KeyboardLayout, camera_state: Option<String>) -> anyhow::Result<()> {
+pub fn run(layout: KeyboardLayout, scene: Scene) -> anyhow::Result<()> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         env_logger::init();
@@ -29,7 +29,7 @@ pub fn run(layout: KeyboardLayout, camera_state: Option<String>) -> anyhow::Resu
     let event_loop = EventLoop::with_user_event().build()?;
     let mut app = App::new(
         layout,
-        camera_state,
+        scene,
         #[cfg(target_arch = "wasm32")]
         &event_loop,
     );

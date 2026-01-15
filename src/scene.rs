@@ -1,8 +1,17 @@
-use std::ops::{self, Index};
+use std::{
+    fs,
+    ops::{self, Index},
+    path::{Path, PathBuf},
+};
 
+use anyhow::anyhow;
+use cgmath::Deg;
 use glam::{Mat3, Vec3, vec3};
 
-use crate::{camera::Camera, mesh::PackedMeshes};
+use crate::{
+    camera::Camera,
+    mesh::{Mesh, PackedMeshes},
+};
 
 #[derive(Debug, Clone, encase::ShaderType)]
 pub struct Material {
@@ -212,12 +221,35 @@ pub struct UniformPlane {
     pub material_id: u32,
 }
 
+#[derive(Debug, Clone)]
 pub struct Scene {
     pub materials: Vec<Material>,
     pub spheres: Vec<Sphere>,
     pub planes: Vec<Plane>,
     pub meshes: PackedMeshes,
     pub camera: Camera,
+}
+
+impl Scene {
+    /// Load scene from TOML file containing scene description.
+    pub fn load_toml(path: impl AsRef<Path>) -> anyhow::Result<Self> {
+        let content = fs::read_to_string(&path).map_err(|err| {
+            anyhow!(
+                "Couldn't open scene {}:\n  {}",
+                path.as_ref().to_string_lossy(),
+                err
+            )
+        })?;
+        let scene_descr: SceneDescriptor = toml::from_str(&content).map_err(|err| {
+            anyhow!(
+                "Couldn't parse scene {}:\n  {}",
+                path.as_ref().to_string_lossy(),
+                err
+            )
+        })?;
+
+        scene_descr.build_scene(path.as_ref())
+    }
 }
 
 #[derive(Hash)]
@@ -227,4 +259,185 @@ pub struct SceneState {
     /// Runtime configurable number in 0..=9. Can be used for any kind of quick temporary
     /// configuration during development. Is changed via the number keys.
     pub dev_index: u32,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct MaterialDescriptor {
+    name: String,
+    color: Vec3,
+    roughness: f32,
+    metallic: f32,
+    emission: Vec3,
+}
+
+#[derive(Debug, serde::Deserialize)]
+enum ObjectDescriptor {
+    Sphere {
+        /// Material name
+        material: String,
+        pos: Vec3,
+        radius: f32,
+    },
+    Plane {
+        /// Material name
+        material: String,
+        pos: Vec3,
+        forward: Vec3,
+        right: Vec3,
+    },
+    Mesh {
+        /// Material name
+        material: String,
+        /// Path to OBJ file, relative to TOML file.
+        path: PathBuf,
+    },
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct CameraDescriptor {
+    pub pos: Vec3,
+    pub yaw: Deg<f32>,
+    pub pitch: Deg<f32>,
+    /// The cameras vertical fov. The horizontal fov is calculated to match in the shader.
+    pub fov_y: Deg<f32>,
+}
+
+impl From<CameraDescriptor> for Camera {
+    fn from(value: CameraDescriptor) -> Self {
+        Self {
+            pos: value.pos,
+            yaw: value.yaw.into(),
+            pitch: value.pitch.into(),
+            fov_y: value.fov_y.into(),
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct SceneDescriptor {
+    material: Vec<MaterialDescriptor>,
+    object: Vec<ObjectDescriptor>,
+    /// Initial camera position.
+    camera: CameraDescriptor,
+}
+
+impl SceneDescriptor {
+    fn build_scene(self, descriptor_path: &Path) -> anyhow::Result<Scene> {
+        let get_material_index = |material_name: &str| -> Option<u32> {
+            self.material
+                .iter()
+                .enumerate()
+                .find(|(_, material)| material.name == material_name)
+                .map(|(index, _)| index as u32)
+        };
+
+        let create_object_error = |index: usize, type_: &str, msg: &str| -> anyhow::Error {
+            anyhow!(
+                "Error in object {} ({}): {}\n  --> {}",
+                index,
+                type_,
+                msg,
+                descriptor_path.to_string_lossy(),
+            )
+        };
+
+        let create_material_error =
+            |index: usize, type_: &str, material_name: &str| -> anyhow::Error {
+                create_object_error(
+                    index,
+                    type_,
+                    &format!("Material '{}' does not exist.", material_name),
+                )
+            };
+
+        let materials = self
+            .material
+            .iter()
+            .map(|descr| Material {
+                color: descr.color,
+                roughness: descr.roughness,
+                metallic: descr.metallic,
+                emission: descr.emission,
+            })
+            .collect::<Vec<_>>();
+
+        let mut spheres = Vec::new();
+        let mut planes = Vec::new();
+        let mut meshes = Vec::new();
+
+        for (i, object) in self.object.into_iter().enumerate() {
+            match object {
+                ObjectDescriptor::Sphere {
+                    material,
+                    pos,
+                    radius,
+                } => {
+                    let Some(material_id) = get_material_index(&material) else {
+                        return Err(create_material_error(i, "Sphere", &material));
+                    };
+
+                    spheres.push(Sphere {
+                        pos,
+                        radius,
+                        material_id,
+                    });
+                }
+                ObjectDescriptor::Plane {
+                    material,
+                    pos,
+                    forward,
+                    right,
+                } => {
+                    let Some(material_id) = get_material_index(&material) else {
+                        return Err(create_material_error(i, "Plane", &material));
+                    };
+
+                    planes.push(Plane {
+                        pos,
+                        forward,
+                        right,
+                        material_id,
+                    });
+                }
+                ObjectDescriptor::Mesh { material, path } => {
+                    let Some(material_id) = get_material_index(&material) else {
+                        return Err(create_material_error(i, "Mesh", &material));
+                    };
+
+                    dbg!(descriptor_path.join(&path));
+
+                    let content = fs::read_to_string(
+                        descriptor_path
+                            .parent()
+                            .unwrap_or(&PathBuf::from("."))
+                            .join(&path),
+                    )
+                    .map_err(|err| {
+                        create_object_error(
+                            i,
+                            "Mesh",
+                            &format!(
+                                "Cannot open '{}': {}",
+                                path.to_string_lossy(),
+                                err.to_string(),
+                            ),
+                        )
+                    })?;
+
+                    meshes.push(
+                        Mesh::load(content, material_id)
+                            .map_err(|err| create_object_error(i, "Mesh", &err.to_string()))?,
+                    );
+                }
+            }
+        }
+
+        Ok(Scene {
+            materials: materials,
+            spheres,
+            planes,
+            meshes: PackedMeshes::pack_meshes(&meshes),
+            camera: self.camera.into(),
+        })
+    }
 }
